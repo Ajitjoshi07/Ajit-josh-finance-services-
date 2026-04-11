@@ -2,11 +2,6 @@
 __pycache__/
 *.py[cod]
 *.pyo
-.Python
-*.egg-info/
-dist/
-build/
-*.egg
 .venv/
 venv/
 env/
@@ -17,34 +12,18 @@ env/
 node_modules/
 dist/
 .cache/
-*.local
 
 # IDE
 .vscode/
 .idea/
-*.swp
-*.swo
 .DS_Store
-Thumbs.db
 
-# Uploads / storage
+# Uploads
 backend/uploads/
-*.pdf
-*.xlsx
 
 # Logs
 *.log
-logs/
 
 # DB
 *.sqlite3
 *.db
-
-# Docker volumes
-postgres_data/
-redis_data/
-
-# Test coverage
-.coverage
-htmlcov/
-.pytest_cache/
