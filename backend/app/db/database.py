@@ -2,49 +2,82 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sess
 from sqlalchemy.orm import DeclarativeBase
 from app.core.config import settings
 import ssl
+import re
+from urllib.parse import urlparse, urlunparse, parse_qs, urlencode, ParseResult
 
 
 class Base(DeclarativeBase):
     pass
 
 
-def build_async_url(url: str) -> str:
-    """Convert any postgres URL to asyncpg format, strip sslmode param"""
+def build_async_url(url: str) -> tuple[str, dict]:
+    """
+    Convert any postgres URL to asyncpg-compatible format.
+    Returns (clean_url, connect_args)
+    
+    Handles:
+    - postgres:// → postgresql+asyncpg://
+    - strips sslmode, channel_binding, connect_timeout params
+    - passes SSL via connect_args not query string
+    """
     if not url:
         raise ValueError("DATABASE_URL is not set")
 
-    # Fix scheme
+    # Normalize scheme first
+    url = url.strip()
     url = url.replace("postgres://", "postgresql://")
     url = url.replace("postgresql+psycopg2://", "postgresql://")
-    url = url.replace("postgresql://", "postgresql+asyncpg://")
 
-    # Remove sslmode query param — asyncpg doesn't accept it
-    import re
-    url = re.sub(r'[?&]sslmode=[^&]*', '', url)
-    url = re.sub(r'[?&]ssl=[^&]*', '', url)
-    url = re.sub(r'\?$', '', url)  # remove trailing ?
+    # Parse the URL properly
+    parsed = urlparse(url)
 
-    return url
+    # Parse query params and remove asyncpg-incompatible ones
+    query_params = parse_qs(parsed.query, keep_blank_values=True)
+    
+    # These params are NOT supported by asyncpg — must be removed
+    STRIP_PARAMS = {
+        'sslmode', 'channel_binding', 'connect_timeout',
+        'application_name', 'sslcert', 'sslkey', 'sslrootcert',
+        'ssl', 'options'
+    }
+    
+    # Check if SSL was requested before removing
+    sslmode = query_params.get('sslmode', [''])[0]
+    needs_ssl = (
+        sslmode in ('require', 'verify-ca', 'verify-full', 'prefer') or
+        'render.com' in (parsed.hostname or '') or
+        'neon.tech' in (parsed.hostname or '') or
+        'supabase.co' in (parsed.hostname or '') or
+        'amazonaws.com' in (parsed.hostname or '')
+    )
 
+    # Remove incompatible params
+    clean_params = {k: v for k, v in query_params.items() if k not in STRIP_PARAMS}
+    clean_query = urlencode(clean_params, doseq=True) if clean_params else ''
 
-def build_connect_args(url: str) -> dict:
-    """Build asyncpg connect_args — use SSL if original URL had sslmode"""
-    needs_ssl = 'sslmode' in url or 'render.com' in url or 'neon.tech' in url or 'supabase' in url
+    # Rebuild clean URL with asyncpg scheme
+    clean = ParseResult(
+        scheme='postgresql+asyncpg',
+        netloc=parsed.netloc,
+        path=parsed.path,
+        params=parsed.params,
+        query=clean_query,
+        fragment=parsed.fragment,
+    )
+    async_url = urlunparse(clean)
 
-    args = {"server_settings": {"jit": "off"}}
-
+    # Build connect_args
+    connect_args = {"server_settings": {"jit": "off"}}
     if needs_ssl:
         ssl_ctx = ssl.create_default_context()
         ssl_ctx.check_hostname = False
         ssl_ctx.verify_mode = ssl.CERT_NONE
-        args["ssl"] = ssl_ctx
+        connect_args["ssl"] = ssl_ctx
 
-    return args
+    return async_url, connect_args
 
 
-_db_url = settings.DATABASE_URL
-_async_url = build_async_url(_db_url)
-_connect_args = build_connect_args(_db_url)
+_async_url, _connect_args = build_async_url(settings.DATABASE_URL)
 
 engine = create_async_engine(
     _async_url,
