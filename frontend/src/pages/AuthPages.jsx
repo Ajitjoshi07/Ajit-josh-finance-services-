@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
 import useAuthStore from '../store/authStore'
-import { Eye, EyeOff, LogIn } from 'lucide-react'
+import { Eye, EyeOff, LogIn, Shield } from 'lucide-react'
 
 export function LoginPage() {
   const { register, handleSubmit, formState: { errors } } = useForm()
@@ -14,10 +14,10 @@ export function LoginPage() {
   const onSubmit = async (data) => {
     const result = await login(data.email, data.password)
     if (result.success) {
-      toast.success('Welcome back!')
+      toast.success(`Welcome back!`)
       navigate('/dashboard')
     } else {
-      toast.error(result.error)
+      toast.error(result.error || 'Login failed')
     }
   }
 
@@ -26,21 +26,24 @@ export function LoginPage() {
       <div className="w-full max-w-md">
         {/* Header */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 bg-gold-400 rounded-2xl mb-4">
+          <div className="inline-flex items-center justify-center w-16 h-16 bg-gold-400 rounded-2xl mb-4 shadow-lg">
             <span className="text-2xl font-bold text-primary-900">AJ</span>
           </div>
-          <h1 className="text-2xl font-bold text-white">Ajit Joshi Finance</h1>
-          <p className="text-primary-200 mt-1">Sign in to your account</p>
+          <h1 className="text-2xl font-bold text-white">Ajit Joshi Finance Services</h1>
+          <p className="text-primary-200 mt-1 text-sm">Professional CA Services Platform</p>
         </div>
 
         <div className="bg-white rounded-2xl shadow-2xl p-8">
+          <h2 className="text-lg font-semibold text-gray-800 mb-6 text-center">Sign in to your account</h2>
+          
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
             <div>
-              <label className="label">Email address</label>
+              <label className="label">Email Address</label>
               <input
                 type="email"
                 className="input"
-                placeholder="you@example.com"
+                placeholder="your@email.com"
+                autoComplete="email"
                 {...register('email', { required: 'Email is required' })}
               />
               {errors.email && <p className="text-red-500 text-xs mt-1">{errors.email.message}</p>}
@@ -53,6 +56,7 @@ export function LoginPage() {
                   type={showPwd ? 'text' : 'password'}
                   className="input pr-10"
                   placeholder="••••••••"
+                  autoComplete="current-password"
                   {...register('password', { required: 'Password is required' })}
                 />
                 <button type="button" onClick={() => setShowPwd(!showPwd)}
@@ -64,29 +68,31 @@ export function LoginPage() {
             </div>
 
             <button type="submit" disabled={isLoading}
-              className="btn-primary w-full flex items-center justify-center gap-2 py-2.5">
+              className="btn-primary w-full flex items-center justify-center gap-2 py-3 text-base">
               {isLoading ? (
-                <div className="spinner w-4 h-4" />
+                <div className="spinner w-5 h-5" />
               ) : (
-                <><LogIn size={16} /> Sign In</>
+                <><LogIn size={18} /> Sign In</>
               )}
             </button>
           </form>
 
-          <p className="mt-6 text-center text-sm text-gray-600">
-            Don't have an account?{' '}
+          <div className="mt-6 flex items-center gap-2 justify-center text-xs text-gray-400">
+            <Shield size={12} />
+            <span>Secured with 256-bit encryption</span>
+          </div>
+
+          <p className="mt-4 text-center text-sm text-gray-500">
+            New client?{' '}
             <Link to="/register" className="text-primary-600 font-medium hover:underline">
-              Register here
+              Contact your CA to get access
             </Link>
           </p>
-
-          {/* Demo credentials */}
-          <div className="mt-4 p-3 bg-blue-50 rounded-lg text-xs text-blue-700">
-            <p className="font-semibold mb-1">Demo Credentials:</p>
-            <p>Admin: admin@ajitjoshi.com / admin123</p>
-            <p>Client: client@demo.com / client123</p>
-          </div>
         </div>
+
+        <p className="text-center text-primary-300 text-xs mt-6">
+          © {new Date().getFullYear()} Ajit Joshi Finance Services. All rights reserved.
+        </p>
       </div>
     </div>
   )
@@ -106,10 +112,10 @@ export function RegisterPage() {
       role: 'client',
     })
     if (result.success) {
-      toast.success('Account created!')
+      toast.success('Account created successfully!')
       navigate('/dashboard')
     } else {
-      toast.error(result.error)
+      toast.error(result.error || 'Registration failed')
     }
   }
 
@@ -120,11 +126,13 @@ export function RegisterPage() {
           <div className="inline-flex items-center justify-center w-16 h-16 bg-gold-400 rounded-2xl mb-4">
             <span className="text-2xl font-bold text-primary-900">AJ</span>
           </div>
-          <h1 className="text-2xl font-bold text-white">Create Account</h1>
-          <p className="text-primary-200 mt-1">Join Ajit Joshi Finance Services</p>
+          <h1 className="text-2xl font-bold text-white">Ajit Joshi Finance Services</h1>
+          <p className="text-primary-200 mt-1 text-sm">Create your client account</p>
         </div>
 
         <div className="bg-white rounded-2xl shadow-2xl p-8">
+          <h2 className="text-lg font-semibold text-gray-800 mb-6 text-center">Create Account</h2>
+
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
             <div>
               <label className="label">Full Name</label>
@@ -132,31 +140,44 @@ export function RegisterPage() {
                 {...register('full_name', { required: 'Name is required' })} />
               {errors.full_name && <p className="text-red-500 text-xs mt-1">{errors.full_name.message}</p>}
             </div>
+
             <div>
-              <label className="label">Email</label>
-              <input type="email" className="input" placeholder="you@example.com"
+              <label className="label">Email Address</label>
+              <input type="email" className="input" placeholder="your@email.com" autoComplete="email"
                 {...register('email', { required: 'Email is required' })} />
               {errors.email && <p className="text-red-500 text-xs mt-1">{errors.email.message}</p>}
             </div>
+
             <div>
-              <label className="label">Phone</label>
-              <input className="input" placeholder="+91 9876543210"
+              <label className="label">Phone Number</label>
+              <input className="input" placeholder="+91 98765 43210"
                 {...register('phone')} />
             </div>
+
             <div>
               <label className="label">Password</label>
-              <input type="password" className="input" placeholder="Min 8 characters"
-                {...register('password', { required: true, minLength: { value: 8, message: 'Min 8 characters' } })} />
+              <input type="password" className="input" placeholder="Min 8 characters" autoComplete="new-password"
+                {...register('password', { required: 'Password is required', minLength: { value: 6, message: 'Minimum 6 characters' } })} />
               {errors.password && <p className="text-red-500 text-xs mt-1">{errors.password.message}</p>}
             </div>
 
+            <div>
+              <label className="label">Confirm Password</label>
+              <input type="password" className="input" placeholder="Re-enter password"
+                {...register('confirm_password', {
+                  required: 'Please confirm password',
+                  validate: (v) => v === watch('password') || 'Passwords do not match'
+                })} />
+              {errors.confirm_password && <p className="text-red-500 text-xs mt-1">{errors.confirm_password.message}</p>}
+            </div>
+
             <button type="submit" disabled={isLoading}
-              className="btn-primary w-full py-2.5 flex items-center justify-center gap-2">
+              className="btn-primary w-full flex items-center justify-center gap-2 py-3 mt-2">
               {isLoading ? <div className="spinner w-4 h-4" /> : 'Create Account'}
             </button>
           </form>
 
-          <p className="mt-6 text-center text-sm text-gray-600">
+          <p className="mt-5 text-center text-sm text-gray-600">
             Already have an account?{' '}
             <Link to="/login" className="text-primary-600 font-medium hover:underline">Sign in</Link>
           </p>
