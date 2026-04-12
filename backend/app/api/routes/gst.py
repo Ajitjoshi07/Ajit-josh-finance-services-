@@ -7,7 +7,7 @@ from decimal import Decimal
 from app.db.database import get_db
 from app.models.models import Transaction, GSTFiling, ClientProfile, User
 from app.schemas.schemas import GSTSummary, GSTR1Report, GSTR3BReport
-from app.core.security import get_current_user
+from app.core.security import get_current_user, require_ca
 from app.services.tax.gst_engine import GSTEngine
 
 router = APIRouter(prefix="/gst", tags=["GST"])
@@ -94,6 +94,56 @@ async def mark_filing_submitted(
     filing.filed_on = datetime.utcnow()
     await db.flush()
     return {"message": "Filing marked as submitted", "id": filing_id}
+
+
+@router.put("/update-status")
+async def update_filing_status(
+    month: int,
+    year: int,
+    financial_year: str,
+    status: str,
+    client_id: Optional[int] = None,
+    current_user: User = Depends(require_ca),
+    db: AsyncSession = Depends(get_db)
+):
+    """Admin/CA endpoint to update filing status for any month"""
+    from datetime import datetime
+    if status not in ["pending", "draft", "filed", "late"]:
+        raise HTTPException(400, "Invalid status. Must be pending, draft, filed, or late")
+
+    # Find or create the filing record
+    cid = client_id
+    if not cid:
+        raise HTTPException(400, "client_id required")
+
+    result = await db.execute(
+        select(GSTFiling).where(
+            and_(
+                GSTFiling.client_id == cid,
+                GSTFiling.financial_year == financial_year,
+                GSTFiling.month == month,
+            )
+        )
+    )
+    filing = result.scalar_one_or_none()
+
+    if not filing:
+        filing = GSTFiling(
+            client_id=cid,
+            financial_year=financial_year,
+            month=month,
+            year=year,
+            filing_status=status,
+        )
+        db.add(filing)
+    else:
+        filing.filing_status = status
+        if status == "filed":
+            filing.filed_on = datetime.utcnow()
+
+    await db.flush()
+    return {"message": f"Filing status updated to {status}", "month": month, "year": year, "status": status}
+
 
 
 @router.get("/verify-gstin/{gstin}")

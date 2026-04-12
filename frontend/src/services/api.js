@@ -1,12 +1,9 @@
 import axios from 'axios'
 
-// Uses env variable in production, falls back to localhost for development
-const BASE_URL = import.meta.env.VITE_API_BASE_URL
-  ? `${import.meta.env.VITE_API_BASE_URL}/api/v1`
-  : 'http://localhost:8000/api/v1'
+const BASE = 'http://localhost:8000/api/v1'
 
 const api = axios.create({
-  baseURL: BASE_URL,
+  baseURL: BASE,
   timeout: 60000,
   headers: { 'Content-Type': 'application/json' },
 })
@@ -50,8 +47,8 @@ export const documentsAPI = {
   upload: (fd) => api.post('/documents/upload', fd, { headers: { 'Content-Type': 'multipart/form-data' } }),
   delete: (id) => api.delete(`/documents/${id}`),
   reprocess: (id) => api.post(`/documents/${id}/reprocess`),
-  downloadUrl: (id) => `${BASE_URL}/documents/${id}/download?token=${getToken()}`,
-  viewUrl: (id) => `${BASE_URL}/documents/${id}/view?token=${getToken()}`,
+  downloadUrl: (id) => `${BASE}/documents/${id}/download?token=${getToken()}`,
+  viewUrl: (id) => `${BASE}/documents/${id}/view?token=${getToken()}`,
 }
 
 export const gstAPI = {
@@ -59,6 +56,9 @@ export const gstAPI = {
   gstr1: (p) => api.get('/gst/gstr1', { params: p }),
   gstr3b: (p) => api.get('/gst/gstr3b', { params: p }),
   markFiled: (id) => api.post(`/gst/file/${id}`),
+  updateStatus: (month, year, fy, status, clientId) => api.put('/gst/update-status', null, {
+    params: { month, year, financial_year: fy, status, client_id: clientId }
+  }),
   verifyGstin: (gstin) => api.get(`/gst/verify-gstin/${gstin}`),
   deadlines: (fy) => api.get('/gst/deadlines', { params: { financial_year: fy } }),
 }
@@ -115,10 +115,10 @@ export const manualEntryAPI = {
 
 export const exportAPI = {
   summary: (fy, clientId) => api.get('/export/ca-file-summary', { params: { financial_year: fy, client_id: clientId } }),
-  transactionsUrl: (fy, clientId) => `${BASE_URL}/export/excel/transactions?financial_year=${fy}${clientId ? `&client_id=${clientId}` : ''}&token=${getToken()}`,
-  gstUrl: (fy, clientId) => `${BASE_URL}/export/excel/gst?financial_year=${fy}${clientId ? `&client_id=${clientId}` : ''}&token=${getToken()}`,
-  tdsUrl: (fy, clientId) => `${BASE_URL}/export/excel/tds?financial_year=${fy}${clientId ? `&client_id=${clientId}` : ''}&token=${getToken()}`,
-  completeUrl: (fy, clientId) => `${BASE_URL}/export/excel/complete?financial_year=${fy}${clientId ? `&client_id=${clientId}` : ''}&token=${getToken()}`,
+  transactionsUrl: (fy, clientId) => `${BASE}/export/excel/transactions?financial_year=${fy}${clientId ? `&client_id=${clientId}` : ''}&token=${getToken()}`,
+  gstUrl: (fy, clientId) => `${BASE}/export/excel/gst?financial_year=${fy}${clientId ? `&client_id=${clientId}` : ''}&token=${getToken()}`,
+  tdsUrl: (fy, clientId) => `${BASE}/export/excel/tds?financial_year=${fy}${clientId ? `&client_id=${clientId}` : ''}&token=${getToken()}`,
+  completeUrl: (fy, clientId) => `${BASE}/export/excel/complete?financial_year=${fy}${clientId ? `&client_id=${clientId}` : ''}&token=${getToken()}`,
 }
 
 export default api

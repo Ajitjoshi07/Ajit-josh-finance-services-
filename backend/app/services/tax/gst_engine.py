@@ -80,6 +80,7 @@ class GSTEngine:
                 "input_gst": input_gst,
                 "net_gst_payable": net_payable,
                 "filing_status": filing.filing_status if filing else "pending",
+                "filing_id": filing.id if filing else None,
             })
 
         return results

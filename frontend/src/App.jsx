@@ -27,14 +27,19 @@ function ProtectedRoute({ children, adminOnly = false }) {
 }
 
 export default function App() {
-  const { token, refreshUser } = useAuthStore()
+  const { token, refreshUser, user } = useAuthStore()
 
-  // Refresh user from server on app load to get correct role
+  // Always refresh user from server on app load to prevent stale role data
   useEffect(() => {
     if (token) {
-      refreshUser()
+      refreshUser().then(freshUser => {
+        // After refresh, sync localStorage with server role
+        if (freshUser) {
+          localStorage.setItem('user', JSON.stringify(freshUser))
+        }
+      })
     }
-  }, [token])
+  }, [token])  // Only re-run when token changes (login/logout)
 
   return (
     <BrowserRouter>

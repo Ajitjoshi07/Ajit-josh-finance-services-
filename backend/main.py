@@ -14,6 +14,7 @@ from app.api.routes.other_routes import (
 )
 from app.api.routes.manual_entry import router as manual_entry_router
 from app.api.routes.export import router as export_router
+from app.api.routes.ai_chat import router as ai_router
 
 
 @asynccontextmanager
@@ -53,6 +54,7 @@ app.include_router(admin_router, prefix=PREFIX)
 app.include_router(notifications_router, prefix=PREFIX)
 app.include_router(manual_entry_router, prefix=PREFIX)
 app.include_router(export_router, prefix=PREFIX)
+app.include_router(ai_router, prefix=PREFIX)
 
 
 @app.get("/")

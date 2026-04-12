@@ -3,43 +3,73 @@ services:
   - type: web
     name: ajit-finance-backend
     runtime: python
-    rootDir: backend
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
-    plan: free
+    rootDir: backend
     envVars:
       - key: DATABASE_URL
-        sync: false
+        fromDatabase:
+          name: ajit-finance-db
+          property: connectionString
       - key: ASYNC_DATABASE_URL
-        sync: false
+        fromDatabase:
+          name: ajit-finance-db
+          property: connectionString
       - key: REDIS_URL
-        sync: false
+        fromService:
+          name: ajit-finance-redis
+          type: redis
+          property: connectionString
       - key: SECRET_KEY
         generateValue: true
       - key: DEBUG
-        value: "false"
+        value: false
       - key: ALLOWED_ORIGINS
-        sync: false
+        value: https://ajit-finance-frontend.onrender.com
       - key: STORAGE_BACKEND
-        value: "local"
-      - key: LOCAL_STORAGE_PATH
-        value: "./uploads"
+        value: local
     healthCheckPath: /health
-    autoDeploy: true
 
-  # ── React Frontend (Static Site) ──────────────────────────────────────────
+  # ── Celery Worker ─────────────────────────────────────────────────────────
+  - type: worker
+    name: ajit-finance-celery
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: celery -A app.core.celery_app worker --loglevel=info
+    rootDir: backend
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ajit-finance-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: ajit-finance-redis
+          type: redis
+          property: connectionString
+      - key: SECRET_KEY
+        sync: false
+
+  # ── React Frontend ─────────────────────────────────────────────────────────
   - type: web
     name: ajit-finance-frontend
     runtime: static
-    rootDir: frontend
     buildCommand: npm install && npm run build
-    staticPublishPath: dist
-    plan: free
-    envVars:
-      - key: VITE_API_BASE_URL
-        sync: false
+    staticPublishPath: ./dist
+    rootDir: frontend
     routes:
       - type: rewrite
         source: /*
         destination: /index.html
-    autoDeploy: true
+    envVars:
+      - key: VITE_API_BASE_URL
+        value: https://ajit-finance-backend.onrender.com
+
+databases:
+  - name: ajit-finance-db
+    plan: free
+    databaseName: ajit_finance_db
+    user: ajit_admin
+
+# Redis (via environment variable - use Render's Redis add-on)
+# Add REDIS_URL manually from Render dashboard
