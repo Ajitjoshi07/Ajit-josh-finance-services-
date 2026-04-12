@@ -1,35 +1,58 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 from app.core.config import settings
+import ssl
 
 
 class Base(DeclarativeBase):
     pass
 
 
-# Build async URL from DATABASE_URL
-def get_async_url(url: str) -> str:
+def build_async_url(url: str) -> str:
+    """Convert any postgres URL to asyncpg format, strip sslmode param"""
     if not url:
         raise ValueError("DATABASE_URL is not set")
-    # Handle Render's postgres:// URL
+
+    # Fix scheme
     url = url.replace("postgres://", "postgresql://")
-    # Convert to asyncpg
-    if url.startswith("postgresql://") and "+asyncpg" not in url:
-        url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
-    if url.startswith("postgresql+psycopg2://"):
-        url = url.replace("postgresql+psycopg2://", "postgresql+asyncpg://", 1)
+    url = url.replace("postgresql+psycopg2://", "postgresql://")
+    url = url.replace("postgresql://", "postgresql+asyncpg://")
+
+    # Remove sslmode query param — asyncpg doesn't accept it
+    import re
+    url = re.sub(r'[?&]sslmode=[^&]*', '', url)
+    url = re.sub(r'[?&]ssl=[^&]*', '', url)
+    url = re.sub(r'\?$', '', url)  # remove trailing ?
+
     return url
 
 
-async_url = get_async_url(settings.DATABASE_URL)
+def build_connect_args(url: str) -> dict:
+    """Build asyncpg connect_args — use SSL if original URL had sslmode"""
+    needs_ssl = 'sslmode' in url or 'render.com' in url or 'neon.tech' in url or 'supabase' in url
+
+    args = {"server_settings": {"jit": "off"}}
+
+    if needs_ssl:
+        ssl_ctx = ssl.create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl.CERT_NONE
+        args["ssl"] = ssl_ctx
+
+    return args
+
+
+_db_url = settings.DATABASE_URL
+_async_url = build_async_url(_db_url)
+_connect_args = build_connect_args(_db_url)
 
 engine = create_async_engine(
-    async_url,
-    echo=settings.DEBUG,
+    _async_url,
+    echo=False,
     pool_pre_ping=True,
-    pool_size=5,
-    max_overflow=10,
-    connect_args={"server_settings": {"jit": "off"}},
+    pool_size=3,
+    max_overflow=5,
+    connect_args=_connect_args,
 )
 
 AsyncSessionLocal = async_sessionmaker(
