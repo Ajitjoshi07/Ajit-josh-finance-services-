@@ -1,20 +1,22 @@
+import uuid
 from datetime import datetime, timedelta
 from typing import Optional
-from jose import JWTError, jwt
-from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from jose import JWTError, jwt
+from passlib.context import CryptContext
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from app.core.config import settings
 from app.db.database import get_db
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-security = HTTPBearer()
+bearer_scheme = HTTPBearer(auto_error=False)
 
 
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+def verify_password(plain: str, hashed: str) -> bool:
+    return pwd_context.verify(plain, hashed)
 
 
 def get_password_hash(password: str) -> str:
@@ -25,47 +27,63 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     to_encode = data.copy()
     expire = datetime.utcnow() + (expires_delta or timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES))
     to_encode.update({"exp": expire})
+    # Ensure sub is always a string
+    if "sub" in to_encode:
+        to_encode["sub"] = str(to_encode["sub"])
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
 def decode_token(token: str) -> dict:
     try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-        return payload
-    except JWTError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+    except JWTError as e:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
 
 
 async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
     db: AsyncSession = Depends(get_db)
 ):
-    from app.models.user import User
-    from sqlalchemy import select
+    from app.models.models import User
 
-    payload = decode_token(credentials.credentials)
-    user_id: str = payload.get("sub")
-    if user_id is None:
-        raise HTTPException(status_code=401, detail="Invalid token")
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Not authenticated")
 
-    result = await db.execute(select(User).where(User.id == int(user_id)))
+    try:
+        payload = decode_token(credentials.credentials)
+        user_id_str: str = payload.get("sub")
+        if not user_id_str:
+            raise HTTPException(status_code=401, detail="Invalid token payload")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=401, detail="Could not validate credentials")
+
+    # Try UUID first, then integer
+    try:
+        uid = uuid.UUID(user_id_str)
+        result = await db.execute(select(User).where(User.id == uid))
+    except (ValueError, AttributeError):
+        try:
+            result = await db.execute(select(User).where(User.id == int(user_id_str)))
+        except Exception:
+            raise HTTPException(status_code=401, detail="Invalid user ID in token")
+
     user = result.scalar_one_or_none()
-    if user is None or not user.is_active:
-        raise HTTPException(status_code=401, detail="User not found or inactive")
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Account is deactivated")
     return user
 
 
 async def require_admin(current_user=Depends(get_current_user)):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
+    if current_user.role not in ("admin", "ca"):
+        raise HTTPException(status_code=403, detail="Admin or CA access required")
     return current_user
 
 
 async def require_ca(current_user=Depends(get_current_user)):
-    if current_user.role not in ["admin", "ca"]:
-        raise HTTPException(status_code=403, detail="CA or Admin access required")
+    if current_user.role not in ("admin", "ca"):
+        raise HTTPException(status_code=403, detail="CA access required")
     return current_user

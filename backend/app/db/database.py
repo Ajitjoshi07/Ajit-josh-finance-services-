@@ -3,21 +3,42 @@ from sqlalchemy.orm import DeclarativeBase
 from app.core.config import settings
 
 
+class Base(DeclarativeBase):
+    pass
+
+
+# Build async URL from DATABASE_URL
+def get_async_url(url: str) -> str:
+    if not url:
+        raise ValueError("DATABASE_URL is not set")
+    # Handle Render's postgres:// URL
+    url = url.replace("postgres://", "postgresql://")
+    # Convert to asyncpg
+    if url.startswith("postgresql://") and "+asyncpg" not in url:
+        url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    if url.startswith("postgresql+psycopg2://"):
+        url = url.replace("postgresql+psycopg2://", "postgresql+asyncpg://", 1)
+    return url
+
+
+async_url = get_async_url(settings.DATABASE_URL)
+
 engine = create_async_engine(
-    settings.ASYNC_DATABASE_URL,
+    async_url,
     echo=settings.DEBUG,
-    pool_size=20,
-    max_overflow=40,
     pool_pre_ping=True,
+    pool_size=5,
+    max_overflow=10,
+    connect_args={"server_settings": {"jit": "off"}},
 )
 
 AsyncSessionLocal = async_sessionmaker(
-    engine, class_=AsyncSession, expire_on_commit=False
+    engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+    autocommit=False,
+    autoflush=True,
 )
-
-
-class Base(DeclarativeBase):
-    pass
 
 
 async def get_db():
@@ -30,8 +51,3 @@ async def get_db():
             raise
         finally:
             await session.close()
-
-
-async def init_db():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)

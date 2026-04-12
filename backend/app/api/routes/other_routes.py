@@ -3,7 +3,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_
 from decimal import Decimal
-from datetime import date
 
 from app.db.database import get_db
 from app.models.models import (
@@ -13,18 +12,24 @@ from app.models.models import (
 from app.schemas.schemas import TDSCreate, ITRSummary
 from app.core.security import get_current_user, require_admin, require_ca
 
-# ─── TDS Router ───────────────────────────────────────────────────────────────
-tds_router = APIRouter(prefix="/tds", tags=["TDS"])
 
-
-async def get_my_client_id(current_user: User, db: AsyncSession, client_id: Optional[int] = None) -> int:
+async def resolve_client_id(current_user: User, db: AsyncSession, client_id: Optional[int]) -> int:
+    """Strictly resolve client_id — no data mixing between clients"""
     if current_user.role == "client":
         result = await db.execute(
             select(ClientProfile).where(ClientProfile.user_id == current_user.id)
         )
         p = result.scalar_one_or_none()
-        return p.id if p else 0
-    return client_id or 0
+        if not p:
+            raise HTTPException(404, "Client profile not found")
+        return p.id
+    if not client_id:
+        raise HTTPException(400, "client_id required — select a client first")
+    return client_id
+
+
+# ─── TDS ─────────────────────────────────────────────────────────────────────
+tds_router = APIRouter(prefix="/tds", tags=["TDS"])
 
 
 @tds_router.post("/", status_code=201)
@@ -35,7 +40,7 @@ async def create_tds_record(
     db: AsyncSession = Depends(get_db)
 ):
     from app.utils.financial_year import get_fy_and_quarter
-    cid = await get_my_client_id(current_user, db, client_id)
+    cid = await resolve_client_id(current_user, db, client_id)
     fy, quarter = get_fy_and_quarter(data.payment_date)
     record = TDSRecord(client_id=cid, financial_year=fy, quarter=quarter, **data.model_dump())
     db.add(record)
@@ -52,7 +57,7 @@ async def get_quarterly_summary(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    cid = await get_my_client_id(current_user, db, client_id)
+    cid = await resolve_client_id(current_user, db, client_id)
     query = select(TDSRecord).where(
         and_(TDSRecord.financial_year == financial_year, TDSRecord.client_id == cid)
     )
@@ -60,7 +65,6 @@ async def get_quarterly_summary(
         query = query.where(TDSRecord.quarter == quarter)
     result = await db.execute(query)
     records = result.scalars().all()
-
     summary = {}
     for rec in records:
         q = rec.quarter
@@ -69,12 +73,9 @@ async def get_quarterly_summary(
         summary[q]["total_payments"] += float(rec.payment_amount or 0)
         summary[q]["total_tds"] += float(rec.tds_amount or 0)
         summary[q]["records"].append({
-            "id": rec.id,
-            "deductee_name": rec.deductee_name,
-            "section": rec.section,
-            "payment_amount": float(rec.payment_amount or 0),
-            "tds_amount": float(rec.tds_amount or 0),
-            "deposited": rec.deposited,
+            "id": rec.id, "deductee_name": rec.deductee_name,
+            "section": rec.section, "payment_amount": float(rec.payment_amount or 0),
+            "tds_amount": float(rec.tds_amount or 0), "deposited": rec.deposited,
         })
     return summary
 
@@ -88,10 +89,14 @@ async def get_tds_sections():
         "194I": {"description": "Rent", "rate": 10.0, "threshold": 240000},
         "194A": {"description": "Interest (other than securities)", "rate": 10.0, "threshold": 40000},
         "194B": {"description": "Lottery winnings", "rate": 30.0, "threshold": 10000},
+        "192": {"description": "Salary", "rate": None, "threshold": 250000},
+        "194D": {"description": "Insurance Commission", "rate": 5.0, "threshold": 15000},
+        "194G": {"description": "Commission on lottery tickets", "rate": 5.0, "threshold": 15000},
+        "194K": {"description": "Income from MF Units", "rate": 10.0, "threshold": 5000},
     }
 
 
-# ─── ITR Router ───────────────────────────────────────────────────────────────
+# ─── ITR ─────────────────────────────────────────────────────────────────────
 itr_router = APIRouter(prefix="/itr", tags=["ITR"])
 
 
@@ -103,10 +108,9 @@ async def get_itr_summary(
     db: AsyncSession = Depends(get_db)
 ):
     from app.services.tax.itr_engine import ITREngine
-    cid = await get_my_client_id(current_user, db, client_id)
+    cid = await resolve_client_id(current_user, db, client_id)
     engine = ITREngine(db)
-    result = await engine.compute_itr(cid, financial_year)
-    return result
+    return await engine.compute_itr(cid, financial_year)
 
 
 @itr_router.post("/save-draft")
@@ -118,25 +122,24 @@ async def save_itr_draft(
     db: AsyncSession = Depends(get_db)
 ):
     from app.services.tax.itr_engine import ITREngine
-    cid = await get_my_client_id(current_user, db, client_id)
+    cid = await resolve_client_id(current_user, db, client_id)
     engine = ITREngine(db)
     summary = await engine.compute_itr(cid, financial_year)
     ay_parts = financial_year.split("-")
     assessment_year = f"20{ay_parts[1]}-{int(ay_parts[1])+1:02d}" if len(ay_parts) == 2 else "2025-26"
     draft = ITRDraft(
-        client_id=cid, financial_year=financial_year,
-        assessment_year=assessment_year, itr_type="ITR-4",
-        gross_income=summary.gross_income, total_deductions=summary.total_deductions,
-        taxable_income=summary.taxable_income, tax_liability=summary.tax_liability,
-        tds_paid=summary.tds_paid, net_tax_payable=summary.net_tax_payable,
-        ca_notes=ca_notes, status="draft",
+        client_id=cid, financial_year=financial_year, assessment_year=assessment_year,
+        itr_type="ITR-4", gross_income=summary.gross_income,
+        total_deductions=summary.total_deductions, taxable_income=summary.taxable_income,
+        tax_liability=summary.tax_liability, tds_paid=summary.tds_paid,
+        net_tax_payable=summary.net_tax_payable, ca_notes=ca_notes, status="draft",
     )
     db.add(draft)
     await db.flush()
     return {"message": "Draft saved", "id": draft.id}
 
 
-# ─── Bookkeeping Router ───────────────────────────────────────────────────────
+# ─── Bookkeeping ─────────────────────────────────────────────────────────────
 bookkeeping_router = APIRouter(prefix="/bookkeeping", tags=["Bookkeeping"])
 
 
@@ -148,7 +151,7 @@ async def get_trial_balance(
     db: AsyncSession = Depends(get_db)
 ):
     from app.services.reports.financial_statements import FinancialStatementsService
-    cid = await get_my_client_id(current_user, db, client_id)
+    cid = await resolve_client_id(current_user, db, client_id)
     svc = FinancialStatementsService(db)
     return await svc.get_trial_balance(cid, financial_year)
 
@@ -157,33 +160,45 @@ async def get_trial_balance(
 async def get_chart_of_accounts():
     return {
         "assets": [
-            {"code": "1001", "name": "Cash in Hand"},
-            {"code": "1002", "name": "Bank Account"},
-            {"code": "1010", "name": "Accounts Receivable"},
-            {"code": "1020", "name": "Inventory"},
-            {"code": "1100", "name": "Fixed Assets"},
+            {"code": "1001", "name": "Cash in Hand"}, {"code": "1002", "name": "Bank Account"},
+            {"code": "1010", "name": "Accounts Receivable"}, {"code": "1020", "name": "Stock/Inventory"},
+            {"code": "1030", "name": "Prepaid Expenses"}, {"code": "1040", "name": "Advance to Suppliers"},
+            {"code": "1100", "name": "Land & Building"}, {"code": "1110", "name": "Plant & Machinery"},
+            {"code": "1120", "name": "Furniture & Fixtures"}, {"code": "1130", "name": "Computers & IT Equipment"},
+            {"code": "1140", "name": "Vehicles"}, {"code": "1150", "name": "Intangible Assets"},
         ],
         "liabilities": [
-            {"code": "2001", "name": "Accounts Payable"},
-            {"code": "2010", "name": "GST Payable"},
-            {"code": "2020", "name": "TDS Payable"},
-            {"code": "2100", "name": "Loans"},
+            {"code": "2001", "name": "Accounts Payable"}, {"code": "2010", "name": "GST Payable (CGST)"},
+            {"code": "2011", "name": "GST Payable (SGST)"}, {"code": "2012", "name": "GST Payable (IGST)"},
+            {"code": "2020", "name": "TDS Payable"}, {"code": "2030", "name": "Salary Payable"},
+            {"code": "2040", "name": "Advance from Customers"}, {"code": "2100", "name": "Bank Loan"},
+            {"code": "2110", "name": "Unsecured Loans"}, {"code": "2120", "name": "Term Loan"},
         ],
         "capital": [
-            {"code": "3001", "name": "Owner's Capital"},
-            {"code": "3010", "name": "Retained Earnings"},
+            {"code": "3001", "name": "Owner's Capital / Proprietor's Capital"},
+            {"code": "3010", "name": "Retained Earnings"}, {"code": "3020", "name": "Drawings"},
+            {"code": "3030", "name": "Share Capital (if company)"}, {"code": "3040", "name": "Reserves & Surplus"},
         ],
         "income": [
-            {"code": "4001", "name": "Sales Revenue"},
-            {"code": "4010", "name": "Other Income"},
+            {"code": "4001", "name": "Sales Revenue (Domestic)"}, {"code": "4002", "name": "Sales Revenue (Export)"},
+            {"code": "4003", "name": "Service Income"}, {"code": "4010", "name": "Other Operating Income"},
+            {"code": "4020", "name": "Interest Income"}, {"code": "4030", "name": "Commission Received"},
+            {"code": "4040", "name": "Rent Received"}, {"code": "4050", "name": "Dividend Income"},
         ],
-        "expenses": [
-            {"code": "5001", "name": "Cost of Goods Sold"},
-            {"code": "5010", "name": "Salaries"},
-            {"code": "5020", "name": "Rent"},
-            {"code": "5030", "name": "Utilities"},
-            {"code": "5040", "name": "Professional Fees"},
-            {"code": "5050", "name": "Depreciation"},
+        "direct_expenses": [
+            {"code": "5001", "name": "Opening Stock"}, {"code": "5002", "name": "Purchases"},
+            {"code": "5003", "name": "Direct Labour / Wages"}, {"code": "5004", "name": "Factory Overhead"},
+            {"code": "5005", "name": "Freight Inward"}, {"code": "5006", "name": "Customs Duty"},
+            {"code": "5007", "name": "Manufacturing Expenses"}, {"code": "5008", "name": "Closing Stock"},
+        ],
+        "indirect_expenses": [
+            {"code": "6001", "name": "Salaries & Staff Welfare"}, {"code": "6002", "name": "Office Rent"},
+            {"code": "6003", "name": "Electricity & Water"}, {"code": "6004", "name": "Telephone & Internet"},
+            {"code": "6005", "name": "Advertising & Marketing"}, {"code": "6006", "name": "Repairs & Maintenance"},
+            {"code": "6007", "name": "Depreciation"}, {"code": "6008", "name": "Professional Fees"},
+            {"code": "6009", "name": "Bank Charges & Interest"}, {"code": "6010", "name": "Insurance"},
+            {"code": "6011", "name": "Printing & Stationery"}, {"code": "6012", "name": "Travelling & Conveyance"},
+            {"code": "6013", "name": "Audit & Legal Fees"}, {"code": "6014", "name": "Miscellaneous Expenses"},
         ],
     }
 
@@ -197,24 +212,21 @@ async def get_journal_entries(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    cid = await get_my_client_id(current_user, db, client_id)
+    cid = await resolve_client_id(current_user, db, client_id)
     query = select(JournalEntry).where(
         and_(JournalEntry.financial_year == financial_year, JournalEntry.client_id == cid)
     ).limit(limit).offset(offset).order_by(JournalEntry.entry_date.desc())
     result = await db.execute(query)
     entries = result.scalars().all()
     return [
-        {
-            "id": e.id, "entry_date": str(e.entry_date),
-            "account_code": e.account_code, "account_name": e.account_name,
-            "debit": float(e.debit_amount or 0), "credit": float(e.credit_amount or 0),
-            "narration": e.narration,
-        }
+        {"id": e.id, "entry_date": str(e.entry_date), "account_code": e.account_code,
+         "account_name": e.account_name, "debit": float(e.debit_amount or 0),
+         "credit": float(e.credit_amount or 0), "narration": e.narration}
         for e in entries
     ]
 
 
-# ─── Reports Router ───────────────────────────────────────────────────────────
+# ─── Reports ─────────────────────────────────────────────────────────────────
 reports_router = APIRouter(prefix="/reports", tags=["Reports"])
 
 
@@ -226,7 +238,7 @@ async def get_profit_loss(
     db: AsyncSession = Depends(get_db)
 ):
     from app.services.reports.financial_statements import FinancialStatementsService
-    cid = await get_my_client_id(current_user, db, client_id)
+    cid = await resolve_client_id(current_user, db, client_id)
     svc = FinancialStatementsService(db)
     return await svc.get_profit_loss(cid, financial_year)
 
@@ -239,12 +251,26 @@ async def get_balance_sheet(
     db: AsyncSession = Depends(get_db)
 ):
     from app.services.reports.financial_statements import FinancialStatementsService
-    cid = await get_my_client_id(current_user, db, client_id)
+    cid = await resolve_client_id(current_user, db, client_id)
     svc = FinancialStatementsService(db)
     return await svc.get_balance_sheet(cid, financial_year)
 
 
-# ─── Client Management Router ────────────────────────────────────────────────
+@reports_router.get("/icai-complete")
+async def get_icai_complete_accounts(
+    financial_year: str = "2024-25",
+    client_id: Optional[int] = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """ICAI standard format: Manufacturing → Trading → P&L → Balance Sheet"""
+    from app.services.reports.financial_statements import FinancialStatementsService
+    cid = await resolve_client_id(current_user, db, client_id)
+    svc = FinancialStatementsService(db)
+    return await svc.get_icai_complete(cid, financial_year)
+
+
+# ─── Clients ─────────────────────────────────────────────────────────────────
 clients_router = APIRouter(prefix="/clients", tags=["Clients"])
 
 
@@ -261,16 +287,10 @@ async def list_clients(
     rows = result.all()
     return [
         {
-            "id": p.id, "user_id": p.user_id,
-            "business_name": p.business_name,
-            "pan": p.pan, "gstin": p.gstin,
-            "business_type": p.business_type,
-            "state": p.state,
-            "current_fy": p.current_financial_year,
-            "is_active": p.is_active,
-            "email": u.email,
-            "full_name": u.full_name,
-            "phone": u.phone,
+            "id": p.id, "user_id": p.user_id, "business_name": p.business_name,
+            "pan": p.pan, "gstin": p.gstin, "business_type": p.business_type,
+            "state": p.state, "current_fy": p.current_financial_year,
+            "is_active": p.is_active, "email": u.email, "full_name": u.full_name, "phone": u.phone,
         }
         for p, u in rows
     ]
@@ -290,67 +310,26 @@ async def get_client_dashboard(
     from app.models.models import GSTFiling
     fy = profile.current_financial_year
 
-    doc_count = await db.execute(
-        select(func.count(Document.id)).where(
-            and_(Document.client_id == client_id, Document.financial_year == fy)
-        )
-    )
-    pending_docs = await db.execute(
-        select(func.count(Document.id)).where(
-            and_(Document.client_id == client_id, Document.processing_status == "pending")
-        )
-    )
-    completed_docs = await db.execute(
-        select(func.count(Document.id)).where(
-            and_(Document.client_id == client_id, Document.processing_status == "completed")
-        )
-    )
-    gst_filed = await db.execute(
-        select(func.count(GSTFiling.id)).where(
-            and_(GSTFiling.client_id == client_id,
-                 GSTFiling.financial_year == fy,
-                 GSTFiling.filing_status == "filed")
-        )
-    )
-    total_sales = await db.execute(
-        select(func.coalesce(func.sum(Transaction.total_amount), 0)).where(
-            and_(Transaction.client_id == client_id,
-                 Transaction.financial_year == fy,
-                 Transaction.transaction_type == "sales")
-        )
-    )
-    total_purchases = await db.execute(
-        select(func.coalesce(func.sum(Transaction.total_amount), 0)).where(
-            and_(Transaction.client_id == client_id,
-                 Transaction.financial_year == fy,
-                 Transaction.transaction_type == "purchase")
-        )
-    )
-    total_expenses = await db.execute(
-        select(func.coalesce(func.sum(Transaction.total_amount), 0)).where(
-            and_(Transaction.client_id == client_id,
-                 Transaction.financial_year == fy,
-                 Transaction.transaction_type == "expense")
-        )
-    )
+    doc_count = await db.execute(select(func.count(Document.id)).where(
+        and_(Document.client_id == client_id, Document.financial_year == fy)))
+    gst_filed = await db.execute(select(func.count(GSTFiling.id)).where(
+        and_(GSTFiling.client_id == client_id, GSTFiling.financial_year == fy, GSTFiling.filing_status == "filed")))
+    total_sales = await db.execute(select(func.coalesce(func.sum(Transaction.total_amount), 0)).where(
+        and_(Transaction.client_id == client_id, Transaction.financial_year == fy,
+             Transaction.transaction_type == "sales", Transaction.is_validated == True)))
+    total_purchases = await db.execute(select(func.coalesce(func.sum(Transaction.total_amount), 0)).where(
+        and_(Transaction.client_id == client_id, Transaction.financial_year == fy,
+             Transaction.transaction_type == "purchase", Transaction.is_validated == True)))
 
     return {
-        "client_id": client_id,
-        "business_name": profile.business_name,
-        "pan": profile.pan,
-        "gstin": profile.gstin,
-        "financial_year": fy,
+        "client_id": client_id, "business_name": profile.business_name,
+        "pan": profile.pan, "gstin": profile.gstin, "financial_year": fy,
         "stats": {
             "documents_uploaded": doc_count.scalar(),
-            "pending_ocr": pending_docs.scalar(),
-            "completed_ocr": completed_docs.scalar(),
             "gst_months_filed": gst_filed.scalar(),
             "total_sales": float(total_sales.scalar() or 0),
             "total_purchases": float(total_purchases.scalar() or 0),
-            "total_expenses": float(total_expenses.scalar() or 0),
         },
-        "pending_tasks": [],
-        "alerts": [],
     }
 
 
@@ -361,8 +340,7 @@ async def get_client_full_profile(
     db: AsyncSession = Depends(get_db)
 ):
     result = await db.execute(
-        select(ClientProfile, User)
-        .join(User, User.id == ClientProfile.user_id)
+        select(ClientProfile, User).join(User, User.id == ClientProfile.user_id)
         .where(ClientProfile.id == client_id)
     )
     row = result.one_or_none()
@@ -370,39 +348,18 @@ async def get_client_full_profile(
         raise HTTPException(404, "Client not found")
     p, u = row
     return {
-        "id": p.id, "user_id": p.user_id,
-        "email": u.email, "full_name": u.full_name, "phone": u.phone,
-        "pan": p.pan, "gstin": p.gstin,
-        "business_name": p.business_name,
-        "business_type": p.business_type,
-        "address": p.address, "state": p.state, "pincode": p.pincode,
+        "id": p.id, "user_id": p.user_id, "email": u.email,
+        "full_name": u.full_name, "phone": u.phone, "pan": p.pan,
+        "gstin": p.gstin, "business_name": p.business_name,
+        "business_type": p.business_type, "address": p.address,
+        "state": p.state, "pincode": p.pincode,
         "registration_date": str(p.registration_date) if p.registration_date else None,
         "current_financial_year": p.current_financial_year,
-        "gstn_status": p.gstn_status,
-        "risk_score": p.risk_score,
-        "is_active": p.is_active,
+        "gstn_status": p.gstn_status, "risk_score": p.risk_score, "is_active": p.is_active,
     }
 
 
-@clients_router.put("/{client_id}/update-profile")
-async def update_client_profile(
-    client_id: int,
-    data: dict,
-    current_user: User = Depends(require_ca),
-    db: AsyncSession = Depends(get_db)
-):
-    result = await db.execute(select(ClientProfile).where(ClientProfile.id == client_id))
-    profile = result.scalar_one_or_none()
-    if not profile:
-        raise HTTPException(404, "Client not found")
-    for k, v in data.items():
-        if hasattr(profile, k):
-            setattr(profile, k, v)
-    await db.flush()
-    return {"message": "Profile updated"}
-
-
-# ─── Notifications Router ─────────────────────────────────────────────────────
+# ─── Notifications ───────────────────────────────────────────────────────────
 notifications_router = APIRouter(prefix="/notifications", tags=["Notifications"])
 
 
@@ -411,10 +368,10 @@ async def get_notifications(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
+    from app.models.models import Notification
     if current_user.role == "client":
         profile_result = await db.execute(
-            select(ClientProfile).where(ClientProfile.user_id == current_user.id)
-        )
+            select(ClientProfile).where(ClientProfile.user_id == current_user.id))
         profile = profile_result.scalar_one_or_none()
         if not profile:
             return []
@@ -423,28 +380,18 @@ async def get_notifications(
         ).order_by(Notification.created_at.desc()).limit(20)
     else:
         query = select(Notification).order_by(Notification.created_at.desc()).limit(50)
-
     result = await db.execute(query)
     notifs = result.scalars().all()
     return [
-        {
-            "id": n.id,
-            "title": n.title,
-            "message": n.message,
-            "type": n.notification_type,
-            "is_read": n.is_read,
-            "created_at": str(n.created_at),
-        }
+        {"id": n.id, "title": n.title, "message": n.message,
+         "type": n.notification_type, "is_read": n.is_read, "created_at": str(n.created_at)}
         for n in notifs
     ]
 
 
 @notifications_router.put("/{notif_id}/read")
-async def mark_notification_read(
-    notif_id: int,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
+async def mark_read(notif_id: int, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.models.models import Notification
     result = await db.execute(select(Notification).where(Notification.id == notif_id))
     notif = result.scalar_one_or_none()
     if notif:
@@ -454,80 +401,53 @@ async def mark_notification_read(
 
 
 @notifications_router.put("/mark-all-read")
-async def mark_all_read(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
+async def mark_all_read(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from app.models.models import Notification
     if current_user.role == "client":
         profile_result = await db.execute(
-            select(ClientProfile).where(ClientProfile.user_id == current_user.id)
-        )
+            select(ClientProfile).where(ClientProfile.user_id == current_user.id))
         profile = profile_result.scalar_one_or_none()
         if profile:
-            result = await db.execute(
-                select(Notification).where(
-                    and_(Notification.client_id == profile.id, Notification.is_read == False)
-                )
-            )
+            result = await db.execute(select(Notification).where(
+                and_(Notification.client_id == profile.id, Notification.is_read == False)))
             for n in result.scalars().all():
                 n.is_read = True
     await db.flush()
     return {"message": "All marked as read"}
 
 
-# ─── Admin Router ─────────────────────────────────────────────────────────────
+# ─── Admin ───────────────────────────────────────────────────────────────────
 admin_router = APIRouter(prefix="/admin", tags=["Admin"])
 
 
 @admin_router.get("/stats")
-async def get_admin_stats(
-    current_user: User = Depends(require_admin),
-    db: AsyncSession = Depends(get_db)
-):
+async def get_admin_stats(current_user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
     total_clients = await db.execute(select(func.count(ClientProfile.id)))
-    active_clients = await db.execute(
-        select(func.count(ClientProfile.id)).where(ClientProfile.is_active == True)
-    )
+    active_clients = await db.execute(select(func.count(ClientProfile.id)).where(ClientProfile.is_active == True))
     total_users = await db.execute(select(func.count(User.id)))
     total_docs = await db.execute(select(func.count(Document.id)))
-    pending_docs = await db.execute(
-        select(func.count(Document.id)).where(Document.processing_status == "pending")
-    )
+    pending_docs = await db.execute(select(func.count(Document.id)).where(Document.processing_status == "pending"))
     total_txns = await db.execute(select(func.count(Transaction.id)))
-
     return {
-        "total_clients": total_clients.scalar(),
-        "active_clients": active_clients.scalar(),
-        "total_users": total_users.scalar(),
-        "total_documents": total_docs.scalar(),
-        "pending_documents": pending_docs.scalar(),
-        "total_transactions": total_txns.scalar(),
+        "total_clients": total_clients.scalar(), "active_clients": active_clients.scalar(),
+        "total_users": total_users.scalar(), "total_documents": total_docs.scalar(),
+        "pending_documents": pending_docs.scalar(), "total_transactions": total_txns.scalar(),
     }
 
 
 @admin_router.get("/users")
-async def list_users(
-    current_user: User = Depends(require_admin),
-    db: AsyncSession = Depends(get_db)
-):
+async def list_users(current_user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User))
     users = result.scalars().all()
     return [
-        {
-            "id": u.id, "email": u.email,
-            "full_name": u.full_name, "phone": u.phone,
-            "role": u.role, "is_active": u.is_active,
-        }
+        {"id": u.id, "email": u.email, "full_name": u.full_name,
+         "phone": u.phone, "role": u.role, "is_active": u.is_active}
         for u in users
     ]
 
 
 @admin_router.put("/users/{user_id}/toggle-active")
-async def toggle_user_active(
-    user_id: int,
-    current_user: User = Depends(require_admin),
-    db: AsyncSession = Depends(get_db)
-):
+async def toggle_user(user_id: int, current_user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if not user:
@@ -538,9 +458,8 @@ async def toggle_user_active(
 
 
 @admin_router.put("/users/{user_id}/reset-password")
-async def reset_user_password(
-    user_id: int,
-    new_password: str,
+async def reset_password(
+    user_id: int, new_password: str,
     current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db)
 ):
@@ -552,3 +471,37 @@ async def reset_user_password(
     user.hashed_password = get_password_hash(new_password)
     await db.flush()
     return {"message": "Password reset successfully"}
+
+
+# Admin: update GST filing status for any client
+@admin_router.put("/gst-filing/update-status")
+async def admin_update_gst_status(
+    client_id: int,
+    financial_year: str,
+    month: int,
+    status: str,  # "filed", "pending", "late"
+    current_user: User = Depends(require_ca),
+    db: AsyncSession = Depends(get_db)
+):
+    from app.models.models import GSTFiling
+    from datetime import datetime
+    result = await db.execute(
+        select(GSTFiling).where(
+            and_(GSTFiling.client_id == client_id,
+                 GSTFiling.financial_year == financial_year,
+                 GSTFiling.month == month)
+        )
+    )
+    filing = result.scalar_one_or_none()
+    if not filing:
+        filing = GSTFiling(
+            client_id=client_id, financial_year=financial_year,
+            month=month, filing_status=status
+        )
+        db.add(filing)
+    else:
+        filing.filing_status = status
+        if status == "filed":
+            filing.filed_on = datetime.utcnow()
+    await db.flush()
+    return {"message": f"GST status updated to {status}"}
