@@ -1,17 +1,12 @@
 import uuid
 from sqlalchemy import (
     Column, String, Float, Boolean, DateTime, Text,
-    ForeignKey, JSON, Date, Numeric, Index, Integer
+    ForeignKey, JSON, Date, Numeric, Integer
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
-import enum
 from app.db.database import Base
-
-
-def gen_uuid():
-    return str(uuid.uuid4())
 
 
 class User(Base):
@@ -19,7 +14,7 @@ class User(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
     email = Column(String(255), unique=True, index=True, nullable=False)
-    hashed_password = Column(String(255), nullable=False)
+    hashed_password = Column("hashed_password", String(255), nullable=False)
     full_name = Column(String(255), nullable=False)
     phone = Column(String(20))
     role = Column(String(20), default="client")
@@ -64,8 +59,7 @@ class ClientProfile(Base):
 
 class Document(Base):
     __tablename__ = "documents"
-
-    id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
     client_id = Column(Integer, ForeignKey("client_profiles.id"), nullable=False, index=True)
     original_filename = Column(String(500), nullable=False)
     stored_filename = Column(String(500))
@@ -84,15 +78,13 @@ class Document(Base):
     is_duplicate = Column(Boolean, default=False)
     processed_at = Column(DateTime(timezone=True))
     upload_date = Column(DateTime(timezone=True), server_default=func.now())
-
     client = relationship("ClientProfile", back_populates="documents")
     transactions = relationship("Transaction", back_populates="document")
 
 
 class Transaction(Base):
     __tablename__ = "transactions"
-
-    id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
     client_id = Column(Integer, ForeignKey("client_profiles.id"), nullable=False, index=True)
     document_id = Column(Integer, ForeignKey("documents.id"), nullable=True)
     transaction_type = Column(String(50), nullable=False)
@@ -113,14 +105,12 @@ class Transaction(Base):
     is_validated = Column(Boolean, default=False)
     description = Column(Text)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-
     client = relationship("ClientProfile", back_populates="transactions")
     document = relationship("Document", back_populates="transactions")
 
 
 class JournalEntry(Base):
     __tablename__ = "journal_entries"
-
     id = Column(Integer, primary_key=True, autoincrement=True)
     client_id = Column(Integer, ForeignKey("client_profiles.id"), nullable=False, index=True)
     entry_date = Column(Date)
@@ -131,13 +121,11 @@ class JournalEntry(Base):
     narration = Column(Text)
     financial_year = Column(String(10), default="2024-25")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-
     client = relationship("ClientProfile", back_populates="journal_entries")
 
 
 class GSTFiling(Base):
     __tablename__ = "gst_filings"
-
     id = Column(Integer, primary_key=True, autoincrement=True)
     client_id = Column(Integer, ForeignKey("client_profiles.id"), nullable=False, index=True)
     financial_year = Column(String(10), nullable=False)
@@ -153,13 +141,11 @@ class GSTFiling(Base):
     filed_on = Column(DateTime(timezone=True))
     arn_number = Column(String(50))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-
     client = relationship("ClientProfile", back_populates="gst_filings")
 
 
 class TDSRecord(Base):
     __tablename__ = "tds_records"
-
     id = Column(Integer, primary_key=True, autoincrement=True)
     client_id = Column(Integer, ForeignKey("client_profiles.id"), nullable=False, index=True)
     financial_year = Column(String(10), nullable=False)
@@ -174,13 +160,11 @@ class TDSRecord(Base):
     deposited = Column(Boolean, default=False)
     challan_number = Column(String(50))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-
     client = relationship("ClientProfile", back_populates="tds_records")
 
 
 class ITRDraft(Base):
     __tablename__ = "itr_drafts"
-
     id = Column(Integer, primary_key=True, autoincrement=True)
     client_id = Column(Integer, ForeignKey("client_profiles.id"), nullable=False, index=True)
     financial_year = Column(String(10), nullable=False)
@@ -195,13 +179,11 @@ class ITRDraft(Base):
     status = Column(String(20), default="draft")
     ca_notes = Column(Text)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-
     client = relationship("ClientProfile", back_populates="itr_drafts")
 
 
 class Notification(Base):
     __tablename__ = "notifications"
-
     id = Column(Integer, primary_key=True, autoincrement=True)
     client_id = Column(Integer, ForeignKey("client_profiles.id"), nullable=True, index=True)
     title = Column(String(255), nullable=False)
@@ -209,13 +191,11 @@ class Notification(Base):
     notification_type = Column(String(50), default="info")
     is_read = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-
     client = relationship("ClientProfile", back_populates="notifications")
 
 
 class ManualEntry(Base):
     __tablename__ = "manual_entries"
-
     id = Column(Integer, primary_key=True, autoincrement=True)
     client_id = Column(Integer, ForeignKey("client_profiles.id"), nullable=False, index=True)
     transaction_type = Column(String(50))
@@ -237,5 +217,4 @@ class ManualEntry(Base):
     ca_notes = Column(Text)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     approved_at = Column(DateTime(timezone=True))
-
     client = relationship("ClientProfile", back_populates="manual_entries")
