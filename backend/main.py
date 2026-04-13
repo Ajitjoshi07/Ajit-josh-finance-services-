@@ -9,7 +9,6 @@ logger = logging.getLogger(__name__)
 
 
 def hash_password(password: str) -> str:
-    """Hash password using bcrypt directly — avoids passlib/bcrypt conflict on Python 3.12"""
     import bcrypt
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
@@ -26,22 +25,28 @@ async def run_migrations():
     from app.db.database import engine
     from sqlalchemy import text
 
-    # ALTER TYPE ADD VALUE cannot run inside a transaction — use AUTOCOMMIT
+    # Fix role column — convert from enum to plain varchar if needed
     async with engine.connect() as conn:
         await conn.execution_options(isolation_level="AUTOCOMMIT")
-        for label in ["admin", "ca", "user"]:
+        try:
+            await conn.execute(text(
+                "ALTER TABLE users ALTER COLUMN role TYPE VARCHAR(20) USING role::text"
+            ))
+        except Exception as e:
+            logger.warning(f"role column fix: {e}")
+        for label in ["admin", "ca", "user", "client"]:
             try:
                 await conn.execute(text(
                     f"DO $$ BEGIN "
+                    f"IF EXISTS (SELECT 1 FROM pg_type WHERE typname='role') THEN "
                     f"IF NOT EXISTS (SELECT 1 FROM pg_enum WHERE enumlabel='{label}' "
                     f"AND enumtypid=(SELECT oid FROM pg_type WHERE typname='role')) "
-                    f"THEN ALTER TYPE role ADD VALUE '{label}'; "
-                    f"END IF; END $$"
+                    f"THEN ALTER TYPE role ADD VALUE '{label}'; END IF; END IF; END $$"
                 ))
             except Exception as e:
-                logger.warning(f"Enum migration warning for '{label}': {e}")
+                logger.warning(f"Enum migration '{label}': {e}")
 
-    # Regular transactional migrations
+    # Regular column migrations
     stmts = [
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS hashed_password VARCHAR(255)",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT false",
@@ -49,6 +54,7 @@ async def run_migrations():
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name VARCHAR(255) DEFAULT ''",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT now()",
+        "ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL",
     ]
     async with engine.begin() as conn:
         for s in stmts:
@@ -62,39 +68,29 @@ async def ensure_admin():
     from app.db.database import AsyncSessionLocal
     from sqlalchemy import text
     email = os.environ.get("ADMIN_EMAIL", "admin@ajitjoshi.com")
-    password = os.environ.get("ADMIN_PASSWORD", "Ajit07")
+    password = os.environ.get("ADMIN_PASSWORD", "Ajit@123")
     hashed = hash_password(password)
     async with AsyncSessionLocal() as db:
         try:
-            r = await db.execute(text(
-                "SELECT column_name FROM information_schema.columns WHERE table_name='users'"
-            ))
-            cols = [x[0] for x in r.fetchall()]
-            logger.info(f"DB users cols: {cols}")
             ex = await db.execute(text("SELECT id FROM users WHERE email=:e"), {"e": email})
             existing = ex.fetchone()
-            pwd_col = next((c for c in ['hashed_password', 'password_hash', 'password'] if c in cols), None)
-            name_col = next((c for c in ['full_name', 'name', 'username'] if c in cols), None)
             if existing:
-                if pwd_col:
-                    await db.execute(text(
-                        f"UPDATE users SET {pwd_col}=:p, role='admin', is_active=true WHERE email=:e"
-                    ), {"p": hashed, "e": email})
-                    await db.commit()
-                logger.info(f"✅ Admin synced: {email} / {password}")
+                await db.execute(text(
+                    "UPDATE users SET hashed_password=:p, role='admin', is_active=true, "
+                    "full_name='Ajit Joshi', is_verified=true WHERE email=:e"
+                ), {"p": hashed, "e": email})
+                await db.commit()
+                logger.info(f"✅ Admin updated: {email}")
             else:
                 new_id = str(uuid.uuid4())
-                cm = {"id": f"'{new_id}'::uuid", "email": f"'{email}'",
-                      "role": "'admin'", "is_active": "true"}
-                if pwd_col: cm[pwd_col] = f"'{hashed}'"
-                if name_col: cm[name_col] = "'Ajit Joshi'"
-                if "is_verified" in cols: cm["is_verified"] = "true"
-                ic, iv = list(cm.keys()), list(cm.values())
-                await db.execute(text(f"INSERT INTO users ({','.join(ic)}) VALUES ({','.join(iv)})"))
+                await db.execute(text(
+                    "INSERT INTO users (id, email, hashed_password, full_name, role, is_active, is_verified) "
+                    "VALUES (:id::uuid, :email, :pwd, 'Ajit Joshi', 'admin', true, true)"
+                ), {"id": new_id, "email": email, "pwd": hashed})
                 await db.commit()
-                logger.info(f"✅ Admin created: {email} / {password}")
+                logger.info(f"✅ Admin created: {email}")
         except Exception as e:
-            logger.error(f"❌ Admin error: {e}")
+            logger.error(f"❌ Admin setup error: {e}")
 
 
 @asynccontextmanager
@@ -194,37 +190,25 @@ async def make_admin(secret: str = ""):
         return {"error": "wrong secret — add ?secret=AjitSetup2024"}
     from app.db.database import AsyncSessionLocal
     from sqlalchemy import text
-    hashed = hash_password("Ajit07")
+    hashed = hash_password("Ajit@123")
     async with AsyncSessionLocal() as db:
         try:
-            r = await db.execute(text(
-                "SELECT column_name FROM information_schema.columns WHERE table_name='users'"
-            ))
-            cols = [x[0] for x in r.fetchall()]
             ex = await db.execute(text("SELECT id FROM users WHERE email='admin@ajitjoshi.com'"))
             existing = ex.fetchone()
-            pwd_col = next((c for c in ['hashed_password', 'password_hash', 'password'] if c in cols), None)
-            name_col = next((c for c in ['full_name', 'name', 'username'] if c in cols), None)
             if existing:
-                if pwd_col:
-                    await db.execute(text(
-                        f"UPDATE users SET {pwd_col}=:p, role='admin', is_active=true "
-                        f"WHERE email='admin@ajitjoshi.com'"
-                    ), {"p": hashed})
+                await db.execute(text(
+                    "UPDATE users SET hashed_password=:p, role='admin', is_active=true, "
+                    "full_name='Ajit Joshi', is_verified=true WHERE email='admin@ajitjoshi.com'"
+                ), {"p": hashed})
                 await db.commit()
-                return {"ok": True, "action": "updated", "email": "admin@ajitjoshi.com",
-                        "password": "Ajit07", "db_columns": cols}
+                return {"ok": True, "action": "updated", "email": "admin@ajitjoshi.com", "password": "Ajit@123"}
             else:
                 new_id = str(uuid.uuid4())
-                cm = {"id": f"'{new_id}'::uuid", "email": "'admin@ajitjoshi.com'",
-                      "role": "'admin'", "is_active": "true"}
-                if pwd_col: cm[pwd_col] = f"'{hashed}'"
-                if name_col: cm[name_col] = "'Ajit Joshi'"
-                if "is_verified" in cols: cm["is_verified"] = "true"
-                ic, iv = list(cm.keys()), list(cm.values())
-                await db.execute(text(f"INSERT INTO users ({','.join(ic)}) VALUES ({','.join(iv)})"))
+                await db.execute(text(
+                    "INSERT INTO users (id, email, hashed_password, full_name, role, is_active, is_verified) "
+                    "VALUES (:id::uuid, :email, :pwd, 'Ajit Joshi', 'admin', true, true)"
+                ), {"id": new_id, "email": "admin@ajitjoshi.com", "pwd": hashed})
                 await db.commit()
-                return {"ok": True, "action": "created", "email": "admin@ajitjoshi.com",
-                        "password": "Ajit07", "cols_used": ic, "all_cols": cols}
+                return {"ok": True, "action": "created", "email": "admin@ajitjoshi.com", "password": "Ajit@123"}
         except Exception as e:
             return {"ok": False, "error": str(e)}
