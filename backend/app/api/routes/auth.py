@@ -49,7 +49,11 @@ async def register(user_data: UserCreate, db: AsyncSession = Depends(get_db)):
 async def login(credentials: UserLogin, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.email == credentials.email))
     user = result.scalar_one_or_none()
-    if not user or not verify_password(credentials.password, user.hashed_password):
+    if not user:
+        raise HTTPException(401, "Invalid email or password")
+    if not user.hashed_password:
+        raise HTTPException(401, "Account has no password set — contact admin")
+    if not verify_password(credentials.password, user.hashed_password):
         raise HTTPException(401, "Invalid email or password")
     if not user.is_active:
         raise HTTPException(403, "Account is deactivated")
@@ -83,7 +87,7 @@ async def update_my_profile(data: dict, current_user: User = Depends(get_current
     result = await db.execute(select(ClientProfile).where(ClientProfile.user_id == current_user.id))
     profile = result.scalar_one_or_none()
 
-    allowed = ['business_name','business_type','pan','gstin','address','state','pincode','registration_date','current_financial_year']
+    allowed = ['business_name', 'business_type', 'pan', 'gstin', 'address', 'state', 'pincode', 'registration_date', 'current_financial_year']
     clean = {}
     for k in allowed:
         v = data.get(k)
@@ -168,138 +172,14 @@ async def admin_create_client(user_data: UserCreate, current_user: User = Depend
     return {"message": "Client created", "user_id": str(user.id), "email": user.email, "temp_password": user_data.password}
 
 
-# ── DB INSPECTION + ADMIN INIT ──────────────────────────────────────────────
-
 @router.get("/db-inspect")
 async def db_inspect(secret: str = "", db: AsyncSession = Depends(get_db)):
-    """Inspect DB columns — helps debug schema mismatches"""
     if secret != "AjitSetup2024":
         return {"error": "Add ?secret=AjitSetup2024"}
-
-    # Get all columns in users table
     cols = await db.execute(text(
         "SELECT column_name, data_type FROM information_schema.columns "
         "WHERE table_name='users' ORDER BY ordinal_position"
     ))
-    user_cols = [{"column": r[0], "type": r[1]} for r in cols.fetchall()]
-
-    # Get all tables
-    tables = await db.execute(text(
-        "SELECT tablename FROM pg_tables WHERE schemaname='public'"
-    ))
-    all_tables = [r[0] for r in tables.fetchall()]
-
-    # Get row count
-    try:
-        count = await db.execute(text("SELECT COUNT(*) FROM users"))
-        user_count = count.scalar()
-    except Exception:
-        user_count = "error"
-
-    return {
-        "tables": all_tables,
-        "users_columns": user_cols,
-        "user_count": user_count,
-    }
-
-
-@router.get("/init-admin")
-async def init_admin(secret: str = "", db: AsyncSession = Depends(get_db)):
-    """Create admin using raw SQL — bypasses ORM column name issues"""
-    if secret != "AjitSetup2024":
-        return {"error": "Add ?secret=AjitSetup2024 to the URL"}
-
-    from passlib.context import CryptContext
-    pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
-    hashed = pwd.hash("Ajit07")
-
-    # First inspect what columns actually exist
-    cols_result = await db.execute(text(
-        "SELECT column_name FROM information_schema.columns "
-        "WHERE table_name='users' ORDER BY ordinal_position"
-    ))
-    existing_cols = [r[0] for r in cols_result.fetchall()]
-
-    if not existing_cols:
-        return {"error": "users table does not exist yet. Backend may still be initializing."}
-
-    # Check if admin exists using raw SQL
-    check = await db.execute(text("SELECT id FROM users WHERE email='admin@ajitjoshi.com'"))
-    existing = check.fetchone()
-
-    # Find password column name (could be hashed_password or password_hash)
-    pwd_col = None
-    for candidate in ['hashed_password', 'password_hash', 'password', 'pwd']:
-        if candidate in existing_cols:
-            pwd_col = candidate
-            break
-
-    if not pwd_col:
-        return {
-            "error": "Cannot find password column",
-            "existing_columns": existing_cols,
-            "hint": "Check db-inspect endpoint"
-        }
-
-    # Find name column
-    name_col = None
-    for candidate in ['full_name', 'name', 'username', 'display_name']:
-        if candidate in existing_cols:
-            name_col = candidate
-            break
-
-    if existing:
-        # Update
-        await db.execute(text(
-            f"UPDATE users SET {pwd_col}=:pwd, role='admin', is_active=true "
-            f"WHERE email='admin@ajitjoshi.com'"
-        ), {"pwd": hashed})
-        await db.commit()
-        return {
-            "status": "✅ SUCCESS - Password Updated",
-            "email": "admin@ajitjoshi.com",
-            "password": "Ajit07",
-            "columns_found": existing_cols,
-            "message": "Go login now at your frontend!"
-        }
-    else:
-        # Insert
-        new_id = str(uuid.uuid4())
-        cols_to_insert = ["id", "email", pwd_col, "role", "is_active"]
-        vals = [f"'{new_id}'::uuid", f"'admin@ajitjoshi.com'", f"'{hashed}'", "'admin'", "true"]
-
-        if name_col:
-            cols_to_insert.append(name_col)
-            vals.append("'Ajit Joshi'")
-        if "is_verified" in existing_cols:
-            cols_to_insert.append("is_verified")
-            vals.append("true")
-
-        sql = f"INSERT INTO users ({','.join(cols_to_insert)}) VALUES ({','.join(vals)})"
-        try:
-            await db.execute(text(sql))
-            await db.commit()
-            return {
-                "status": "✅ SUCCESS - Admin Created",
-                "email": "admin@ajitjoshi.com",
-                "password": "Ajit07",
-                "columns_used": cols_to_insert,
-                "message": "Go login now at your frontend!"
-            }
-        except Exception as e:
-            await db.rollback()
-            return {
-                "status": "❌ Insert failed",
-                "error": str(e),
-                "sql_attempted": sql,
-                "existing_columns": existing_cols
-            }
-@router.get("/db-inspect")
-async def db_inspect(secret: str = "", db: AsyncSession = Depends(get_db)):
-    if secret != "AjitSetup2024":
-        return {"error": "Add ?secret=AjitSetup2024"}
-    from sqlalchemy import text
-    cols = await db.execute(text("SELECT column_name, data_type FROM information_schema.columns WHERE table_name='users' ORDER BY ordinal_position"))
     user_cols = [{"column": r[0], "type": r[1]} for r in cols.fetchall()]
     tables = await db.execute(text("SELECT tablename FROM pg_tables WHERE schemaname='public'"))
     all_tables = [r[0] for r in tables.fetchall()]
@@ -308,43 +188,44 @@ async def db_inspect(secret: str = "", db: AsyncSession = Depends(get_db)):
         user_count = count.scalar()
     except Exception:
         user_count = "error"
-    return {"tables": all_tables, "users_columns": user_cols, "user_count": user_count}
+    # Also show admin user details for debugging
+    try:
+        admin = await db.execute(text(
+            "SELECT id, email, role, is_active, is_verified, "
+            "CASE WHEN hashed_password IS NOT NULL THEN 'SET' ELSE 'NULL' END as pwd_status "
+            "FROM users WHERE email='admin@ajitjoshi.com'"
+        ))
+        admin_row = admin.fetchone()
+        admin_info = dict(admin_row._mapping) if admin_row else "not found"
+    except Exception as e:
+        admin_info = str(e)
+    return {
+        "tables": all_tables,
+        "users_columns": user_cols,
+        "user_count": user_count,
+        "admin_status": admin_info,
+    }
 
 
-@router.get("/init-admin")
-async def init_admin(secret: str = "", db: AsyncSession = Depends(get_db)):
+@router.get("/reset-admin")
+async def reset_admin(secret: str = "", db: AsyncSession = Depends(get_db)):
+    """Force reset admin password to Ajit@123"""
     if secret != "AjitSetup2024":
-        return {"error": "Add ?secret=AjitSetup2024 to the URL"}
-    import uuid as _uuid
-    from passlib.context import CryptContext
-    from sqlalchemy import text
-    pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
-    hashed = pwd.hash("Ajit07")
-    cols_result = await db.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='users' ORDER BY ordinal_position"))
-    existing_cols = [r[0] for r in cols_result.fetchall()]
-    if not existing_cols:
-        return {"error": "users table does not exist yet"}
-    check = await db.execute(text("SELECT id FROM users WHERE email='admin@ajitjoshi.com'"))
-    existing = check.fetchone()
-    pwd_col = next((c for c in ['hashed_password','password_hash','password','pwd'] if c in existing_cols), None)
-    if not pwd_col:
-        return {"error": "Cannot find password column", "existing_columns": existing_cols}
-    name_col = next((c for c in ['full_name','name','username','display_name'] if c in existing_cols), None)
-    if existing:
-        await db.execute(text(f"UPDATE users SET {pwd_col}=:pwd, role='admin', is_active=true WHERE email='admin@ajitjoshi.com'"), {"pwd": hashed})
+        return {"error": "Add ?secret=AjitSetup2024"}
+    import bcrypt
+    hashed = bcrypt.hashpw("Ajit@123".encode(), bcrypt.gensalt()).decode()
+    try:
+        await db.execute(text(
+            "UPDATE users SET hashed_password=:p, role='admin', is_active=true, is_verified=true "
+            "WHERE email='admin@ajitjoshi.com'"
+        ), {"p": hashed})
         await db.commit()
-        return {"status": "SUCCESS - Password Updated", "email": "admin@ajitjoshi.com", "password": "Ajit07", "message": "Login now!"}
-    else:
-        new_id = str(_uuid.uuid4())
-        c = ["id","email",pwd_col,"role","is_active"]
-        v = [f"'{new_id}'::uuid",f"'admin@ajitjoshi.com'",f"'{hashed}'","'admin'","true"]
-        if name_col: c.append(name_col); v.append("'Ajit Joshi'")
-        if "is_verified" in existing_cols: c.append("is_verified"); v.append("true")
-        sql = f"INSERT INTO users ({','.join(c)}) VALUES ({','.join(v)})"
-        try:
-            await db.execute(text(sql))
-            await db.commit()
-            return {"status": "SUCCESS - Admin Created", "email": "admin@ajitjoshi.com", "password": "Ajit07", "columns_used": c, "message": "Login now!"}
-        except Exception as e:
-            await db.rollback()
-            return {"status": "Error", "error": str(e), "existing_columns": existing_cols}
+        check = await db.execute(text("SELECT id, role, is_active FROM users WHERE email='admin@ajitjoshi.com'"))
+        row = check.fetchone()
+        return {
+            "ok": True,
+            "message": "Admin password reset to Ajit@123",
+            "user": dict(row._mapping) if row else "not found"
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
