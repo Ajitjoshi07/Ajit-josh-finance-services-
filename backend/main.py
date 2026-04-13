@@ -5,90 +5,70 @@ import logging
 import os
 import uuid
 
-from app.core.config import settings
-from app.db.database import engine, Base, AsyncSessionLocal
-from app.models import models  # noqa
-
-from app.api.routes.auth import router as auth_router
-from app.api.routes.documents import router as documents_router
-from app.api.routes.gst import router as gst_router
-from app.api.routes.export import router as export_router
-from app.api.routes.manual_entry import router as manual_entry_router
-from app.api.routes.other_routes import (
-    tds_router, itr_router, bookkeeping_router,
-    reports_router, clients_router, notifications_router, admin_router
-)
-
 logger = logging.getLogger(__name__)
 
+# ── Startup tasks ────────────────────────────────────────────────────────────
 
 async def run_migrations():
-    """Fix missing columns — runs on every startup safely"""
+    from app.db.database import engine
     from sqlalchemy import text
     stmts = [
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS hashed_password VARCHAR(255)",
-        "UPDATE users SET hashed_password = password WHERE hashed_password IS NULL AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='password')",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT false",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(20)",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name VARCHAR(255) DEFAULT ''",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT now()",
     ]
     async with engine.begin() as conn:
         for s in stmts:
             try:
                 await conn.execute(text(s))
-            except Exception as e:
-                logger.warning(f"Migration skip ({str(e)[:60]})")
+            except Exception:
+                pass
 
 
 async def ensure_admin():
-    """Create/update admin via raw SQL — bypasses ORM"""
+    from app.db.database import AsyncSessionLocal
     from sqlalchemy import text
     from passlib.context import CryptContext
     pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
-    admin_email = os.environ.get("ADMIN_EMAIL", "admin@ajitjoshi.com")
-    admin_password = os.environ.get("ADMIN_PASSWORD", "Ajit07")
-    hashed = pwd.hash(admin_password)
-
+    email = os.environ.get("ADMIN_EMAIL", "admin@ajitjoshi.com")
+    password = os.environ.get("ADMIN_PASSWORD", "Ajit07")
+    hashed = pwd.hash(password)
     async with AsyncSessionLocal() as db:
         try:
-            cols_r = await db.execute(text(
-                "SELECT column_name FROM information_schema.columns WHERE table_name='users'"
-            ))
-            cols = [r[0] for r in cols_r.fetchall()]
-            logger.info(f"DB users columns: {cols}")
-
-            ex = await db.execute(text("SELECT id FROM users WHERE email=:e"), {"e": admin_email})
+            r = await db.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='users'"))
+            cols = [x[0] for x in r.fetchall()]
+            logger.info(f"DB users cols: {cols}")
+            ex = await db.execute(text("SELECT id FROM users WHERE email=:e"), {"e": email})
             existing = ex.fetchone()
-
             pwd_col = next((c for c in ['hashed_password','password_hash','password'] if c in cols), None)
             name_col = next((c for c in ['full_name','name','username'] if c in cols), None)
-
             if existing:
                 if pwd_col:
-                    await db.execute(text(
-                        f"UPDATE users SET {pwd_col}=:p, role='admin', is_active=true WHERE email=:e"
-                    ), {"p": hashed, "e": admin_email})
+                    await db.execute(text(f"UPDATE users SET {pwd_col}=:p, role='admin', is_active=true WHERE email=:e"), {"p": hashed, "e": email})
                     await db.commit()
-                logger.info(f"✅ Admin synced: {admin_email} / {admin_password}")
+                    logger.info(f"✅ Admin updated: {email} / {password}")
             else:
                 new_id = str(uuid.uuid4())
-                col_map = {"id": f"'{new_id}'::uuid", "email": f"'{admin_email}'",
-                           "role": "'admin'", "is_active": "true"}
-                if pwd_col: col_map[pwd_col] = f"'{hashed}'"
-                if name_col: col_map[name_col] = "'Ajit Joshi'"
-                if "is_verified" in cols: col_map["is_verified"] = "true"
-                ic = list(col_map.keys())
-                iv = list(col_map.values())
+                cm = {"id": f"'{new_id}'::uuid", "email": f"'{email}'", "role": "'admin'", "is_active": "true"}
+                if pwd_col: cm[pwd_col] = f"'{hashed}'"
+                if name_col: cm[name_col] = "'Ajit Joshi'"
+                if "is_verified" in cols: cm["is_verified"] = "true"
+                ic = list(cm.keys())
+                iv = list(cm.values())
                 await db.execute(text(f"INSERT INTO users ({','.join(ic)}) VALUES ({','.join(iv)})"))
                 await db.commit()
-                logger.info(f"✅ Admin created: {admin_email} / {admin_password}")
+                logger.info(f"✅ Admin created: {email} / {password}")
         except Exception as e:
-            logger.error(f"❌ Admin setup error: {e}")
+            logger.error(f"❌ Admin error: {e}")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from app.db.database import engine, Base
+    from app.models import models  # noqa - registers all models
     try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
@@ -101,6 +81,8 @@ async def lifespan(app: FastAPI):
     yield
 
 
+# ── App ──────────────────────────────────────────────────────────────────────
+
 app = FastAPI(
     title="Ajit Joshi Finance Services",
     version="1.0.0",
@@ -110,24 +92,69 @@ app = FastAPI(
     openapi_url="/api/openapi.json",
 )
 
+from app.core.config import settings
 origins = [o.strip() for o in (settings.ALLOWED_ORIGINS or "").split(",") if o.strip()]
-origins += ["http://localhost:3000", "http://localhost:5173", "http://127.0.0.1:5173"]
-app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True,
-                   allow_methods=["*"], allow_headers=["*"])
+origins += ["http://localhost:3000", "http://localhost:5173"]
+app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+
+# ── Routers ──────────────────────────────────────────────────────────────────
 
 PREFIX = "/api/v1"
-app.include_router(auth_router, prefix=PREFIX)
-app.include_router(documents_router, prefix=PREFIX)
-app.include_router(gst_router, prefix=PREFIX)
-app.include_router(export_router, prefix=PREFIX)
-app.include_router(manual_entry_router, prefix=PREFIX)
-app.include_router(tds_router, prefix=PREFIX)
-app.include_router(itr_router, prefix=PREFIX)
-app.include_router(bookkeeping_router, prefix=PREFIX)
-app.include_router(reports_router, prefix=PREFIX)
-app.include_router(clients_router, prefix=PREFIX)
-app.include_router(notifications_router, prefix=PREFIX)
-app.include_router(admin_router, prefix=PREFIX)
+
+try:
+    from app.api.routes.auth import router as auth_router
+    app.include_router(auth_router, prefix=PREFIX)
+except Exception as e:
+    logger.error(f"auth router error: {e}")
+
+try:
+    from app.api.routes.documents import router as documents_router
+    app.include_router(documents_router, prefix=PREFIX)
+except Exception as e:
+    logger.error(f"documents router error: {e}")
+
+try:
+    from app.api.routes.gst import router as gst_router
+    app.include_router(gst_router, prefix=PREFIX)
+except Exception as e:
+    logger.error(f"gst router error: {e}")
+
+try:
+    from app.api.routes.export import router as export_router
+    app.include_router(export_router, prefix=PREFIX)
+except Exception as e:
+    logger.error(f"export router error: {e}")
+
+try:
+    from app.api.routes.manual_entry import router as manual_entry_router
+    app.include_router(manual_entry_router, prefix=PREFIX)
+except Exception as e:
+    logger.error(f"manual_entry router error: {e}")
+
+try:
+    from app.api.routes.other_routes import (
+        tds_router, itr_router, bookkeeping_router,
+        reports_router, clients_router, notifications_router, admin_router
+    )
+    for r in [tds_router, itr_router, bookkeeping_router, reports_router,
+              clients_router, notifications_router, admin_router]:
+        app.include_router(r, prefix=PREFIX)
+except Exception as e:
+    logger.error(f"other routes error: {e}")
+
+try:
+    from app.api.routes.setup import router as setup_router
+    app.include_router(setup_router, prefix=PREFIX)
+except Exception:
+    pass  # setup router is optional
+
+
+# ── Core endpoints ───────────────────────────────────────────────────────────
+
+@app.get("/")
+async def root():
+    return {"message": "Ajit Joshi Finance Services API", "docs": "/api/docs"}
 
 
 @app.get("/health")
@@ -135,50 +162,39 @@ async def health():
     return {"status": "healthy", "version": "1.0.0"}
 
 
-@app.get("/")
-async def root():
-    return {"message": "Ajit Joshi Finance Services API", "docs": "/api/docs"}
-
-
 @app.get("/make-admin")
 async def make_admin(secret: str = ""):
-    """Emergency endpoint — creates admin directly via raw SQL"""
+    """Emergency admin creation — bypasses all ORM issues"""
     if secret != "AjitSetup2024":
-        return {"error": "Add ?secret=AjitSetup2024"}
+        return {"error": "wrong secret"}
+    from app.db.database import AsyncSessionLocal
     from sqlalchemy import text
     from passlib.context import CryptContext
     pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
     hashed = pwd.hash("Ajit07")
     async with AsyncSessionLocal() as db:
         try:
-            cols_r = await db.execute(text(
-                "SELECT column_name FROM information_schema.columns WHERE table_name='users'"
-            ))
-            cols = [r[0] for r in cols_r.fetchall()]
+            r = await db.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='users'"))
+            cols = [x[0] for x in r.fetchall()]
             ex = await db.execute(text("SELECT id FROM users WHERE email='admin@ajitjoshi.com'"))
             existing = ex.fetchone()
             pwd_col = next((c for c in ['hashed_password','password_hash','password'] if c in cols), None)
             name_col = next((c for c in ['full_name','name','username'] if c in cols), None)
             if existing:
                 if pwd_col:
-                    await db.execute(text(
-                        f"UPDATE users SET {pwd_col}=:p, role='admin', is_active=true WHERE email='admin@ajitjoshi.com'"
-                    ), {"p": hashed})
+                    await db.execute(text(f"UPDATE users SET {pwd_col}=:p, role='admin', is_active=true WHERE email='admin@ajitjoshi.com'"), {"p": hashed})
                 await db.commit()
-                return {"ok": True, "action": "updated", "email": "admin@ajitjoshi.com",
-                        "password": "Ajit07", "all_db_columns": cols}
+                return {"ok": True, "done": "password updated", "email": "admin@ajitjoshi.com", "password": "Ajit07", "db_cols": cols}
             else:
                 new_id = str(uuid.uuid4())
-                col_map = {"id": f"'{new_id}'::uuid", "email": "'admin@ajitjoshi.com'",
-                           "role": "'admin'", "is_active": "true"}
-                if pwd_col: col_map[pwd_col] = f"'{hashed}'"
-                if name_col: col_map[name_col] = "'Ajit Joshi'"
-                if "is_verified" in cols: col_map["is_verified"] = "true"
-                ic = list(col_map.keys())
-                iv = list(col_map.values())
+                cm = {"id": f"'{new_id}'::uuid", "email": "'admin@ajitjoshi.com'", "role": "'admin'", "is_active": "true"}
+                if pwd_col: cm[pwd_col] = f"'{hashed}'"
+                if name_col: cm[name_col] = "'Ajit Joshi'"
+                if "is_verified" in cols: cm["is_verified"] = "true"
+                ic = list(cm.keys())
+                iv = list(cm.values())
                 await db.execute(text(f"INSERT INTO users ({','.join(ic)}) VALUES ({','.join(iv)})"))
                 await db.commit()
-                return {"ok": True, "action": "created", "email": "admin@ajitjoshi.com",
-                        "password": "Ajit07", "columns_used": ic, "all_db_columns": cols}
+                return {"ok": True, "done": "admin created", "email": "admin@ajitjoshi.com", "password": "Ajit07", "cols_used": ic, "all_cols": cols}
         except Exception as e:
             return {"ok": False, "error": str(e)}
