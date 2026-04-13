@@ -25,6 +25,23 @@ def verify_password(plain: str, hashed: str) -> bool:
 async def run_migrations():
     from app.db.database import engine
     from sqlalchemy import text
+
+    # ALTER TYPE ADD VALUE cannot run inside a transaction — use AUTOCOMMIT
+    async with engine.connect() as conn:
+        await conn.execution_options(isolation_level="AUTOCOMMIT")
+        for label in ["admin", "ca", "user"]:
+            try:
+                await conn.execute(text(
+                    f"DO $$ BEGIN "
+                    f"IF NOT EXISTS (SELECT 1 FROM pg_enum WHERE enumlabel='{label}' "
+                    f"AND enumtypid=(SELECT oid FROM pg_type WHERE typname='role')) "
+                    f"THEN ALTER TYPE role ADD VALUE '{label}'; "
+                    f"END IF; END $$"
+                ))
+            except Exception as e:
+                logger.warning(f"Enum migration warning for '{label}': {e}")
+
+    # Regular transactional migrations
     stmts = [
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS hashed_password VARCHAR(255)",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT false",
