@@ -294,3 +294,57 @@ async def init_admin(secret: str = "", db: AsyncSession = Depends(get_db)):
                 "sql_attempted": sql,
                 "existing_columns": existing_cols
             }
+@router.get("/db-inspect")
+async def db_inspect(secret: str = "", db: AsyncSession = Depends(get_db)):
+    if secret != "AjitSetup2024":
+        return {"error": "Add ?secret=AjitSetup2024"}
+    from sqlalchemy import text
+    cols = await db.execute(text("SELECT column_name, data_type FROM information_schema.columns WHERE table_name='users' ORDER BY ordinal_position"))
+    user_cols = [{"column": r[0], "type": r[1]} for r in cols.fetchall()]
+    tables = await db.execute(text("SELECT tablename FROM pg_tables WHERE schemaname='public'"))
+    all_tables = [r[0] for r in tables.fetchall()]
+    try:
+        count = await db.execute(text("SELECT COUNT(*) FROM users"))
+        user_count = count.scalar()
+    except Exception:
+        user_count = "error"
+    return {"tables": all_tables, "users_columns": user_cols, "user_count": user_count}
+
+
+@router.get("/init-admin")
+async def init_admin(secret: str = "", db: AsyncSession = Depends(get_db)):
+    if secret != "AjitSetup2024":
+        return {"error": "Add ?secret=AjitSetup2024 to the URL"}
+    import uuid as _uuid
+    from passlib.context import CryptContext
+    from sqlalchemy import text
+    pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
+    hashed = pwd.hash("Ajit07")
+    cols_result = await db.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='users' ORDER BY ordinal_position"))
+    existing_cols = [r[0] for r in cols_result.fetchall()]
+    if not existing_cols:
+        return {"error": "users table does not exist yet"}
+    check = await db.execute(text("SELECT id FROM users WHERE email='admin@ajitjoshi.com'"))
+    existing = check.fetchone()
+    pwd_col = next((c for c in ['hashed_password','password_hash','password','pwd'] if c in existing_cols), None)
+    if not pwd_col:
+        return {"error": "Cannot find password column", "existing_columns": existing_cols}
+    name_col = next((c for c in ['full_name','name','username','display_name'] if c in existing_cols), None)
+    if existing:
+        await db.execute(text(f"UPDATE users SET {pwd_col}=:pwd, role='admin', is_active=true WHERE email='admin@ajitjoshi.com'"), {"pwd": hashed})
+        await db.commit()
+        return {"status": "SUCCESS - Password Updated", "email": "admin@ajitjoshi.com", "password": "Ajit07", "message": "Login now!"}
+    else:
+        new_id = str(_uuid.uuid4())
+        c = ["id","email",pwd_col,"role","is_active"]
+        v = [f"'{new_id}'::uuid",f"'admin@ajitjoshi.com'",f"'{hashed}'","'admin'","true"]
+        if name_col: c.append(name_col); v.append("'Ajit Joshi'")
+        if "is_verified" in existing_cols: c.append("is_verified"); v.append("true")
+        sql = f"INSERT INTO users ({','.join(c)}) VALUES ({','.join(v)})"
+        try:
+            await db.execute(text(sql))
+            await db.commit()
+            return {"status": "SUCCESS - Admin Created", "email": "admin@ajitjoshi.com", "password": "Ajit07", "columns_used": c, "message": "Login now!"}
+        except Exception as e:
+            await db.rollback()
+            return {"status": "Error", "error": str(e), "existing_columns": existing_cols}
