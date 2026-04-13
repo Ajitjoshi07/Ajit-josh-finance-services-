@@ -84,8 +84,8 @@ async def ensure_admin():
             else:
                 new_id = str(uuid.uuid4())
                 await db.execute(text(
-                    "INSERT INTO users (id, email, hashed_password, full_name, role, is_active, is_verified) "
-                    "VALUES (CAST(:id AS uuid), :email, :pwd, 'Ajit Joshi', 'admin', true, true)"
+                    "INSERT INTO users (id, email, hashed_password, full_name, role, is_active, is_verified, created_at) "
+                    "VALUES (CAST(:id AS uuid), :email, :pwd, 'Ajit Joshi', 'admin', true, true, now())"
                 ), {"id": new_id, "email": email, "pwd": hashed})
                 await db.commit()
                 logger.info(f"✅ Admin created: {email}")
@@ -205,8 +205,8 @@ async def make_admin(secret: str = ""):
             else:
                 new_id = str(uuid.uuid4())
                 await db.execute(text(
-                    "INSERT INTO users (id, email, hashed_password, full_name, role, is_active, is_verified) "
-                    "VALUES (CAST(:id AS uuid), :email, :pwd, 'Ajit Joshi', 'admin', true, true)"
+                    "INSERT INTO users (id, email, hashed_password, full_name, role, is_active, is_verified, created_at) "
+                    "VALUES (CAST(:id AS uuid), :email, :pwd, 'Ajit Joshi', 'admin', true, true, now())"
                 ), {"id": new_id, "email": "admin@ajitjoshi.com", "pwd": hashed})
                 await db.commit()
                 return {"ok": True, "action": "created", "email": "admin@ajitjoshi.com", "password": "Ajit@123"}
