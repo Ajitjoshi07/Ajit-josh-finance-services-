@@ -46,7 +46,7 @@ async def run_migrations():
             except Exception as e:
                 logger.warning(f"Enum migration '{label}': {e}")
 
-    # Regular column migrations
+    # Regular column migrations + fix any NOT NULL constraints
     stmts = [
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS hashed_password VARCHAR(255)",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT false",
@@ -54,7 +54,11 @@ async def run_migrations():
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name VARCHAR(255) DEFAULT ''",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT now()",
+        # Drop NOT NULL on any legacy columns that might block inserts
         "ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL",
+        "ALTER TABLE users ALTER COLUMN updated_at DROP NOT NULL",
+        "ALTER TABLE users ALTER COLUMN created_at SET DEFAULT now()",
+        "ALTER TABLE users ALTER COLUMN phone DROP NOT NULL",
     ]
     async with engine.begin() as conn:
         for s in stmts:
@@ -77,15 +81,15 @@ async def ensure_admin():
             if existing:
                 await db.execute(text(
                     "UPDATE users SET hashed_password=:p, role='admin', is_active=true, "
-                    "full_name='Ajit Joshi', is_verified=true WHERE email=:e"
+                    "full_name='Ajit Joshi', is_verified=true, updated_at=now() WHERE email=:e"
                 ), {"p": hashed, "e": email})
                 await db.commit()
                 logger.info(f"✅ Admin updated: {email}")
             else:
                 new_id = str(uuid.uuid4())
                 await db.execute(text(
-                    "INSERT INTO users (id, email, hashed_password, full_name, role, is_active, is_verified, created_at) "
-                    "VALUES (CAST(:id AS uuid), :email, :pwd, 'Ajit Joshi', 'admin', true, true, now())"
+                    "INSERT INTO users (id, email, hashed_password, full_name, role, is_active, is_verified, created_at, updated_at) "
+                    "VALUES (CAST(:id AS uuid), :email, :pwd, 'Ajit Joshi', 'admin', true, true, now(), now())"
                 ), {"id": new_id, "email": email, "pwd": hashed})
                 await db.commit()
                 logger.info(f"✅ Admin created: {email}")
@@ -198,15 +202,15 @@ async def make_admin(secret: str = ""):
             if existing:
                 await db.execute(text(
                     "UPDATE users SET hashed_password=:p, role='admin', is_active=true, "
-                    "full_name='Ajit Joshi', is_verified=true WHERE email='admin@ajitjoshi.com'"
+                    "full_name='Ajit Joshi', is_verified=true, updated_at=now() WHERE email='admin@ajitjoshi.com'"
                 ), {"p": hashed})
                 await db.commit()
                 return {"ok": True, "action": "updated", "email": "admin@ajitjoshi.com", "password": "Ajit@123"}
             else:
                 new_id = str(uuid.uuid4())
                 await db.execute(text(
-                    "INSERT INTO users (id, email, hashed_password, full_name, role, is_active, is_verified, created_at) "
-                    "VALUES (CAST(:id AS uuid), :email, :pwd, 'Ajit Joshi', 'admin', true, true, now())"
+                    "INSERT INTO users (id, email, hashed_password, full_name, role, is_active, is_verified, created_at, updated_at) "
+                    "VALUES (CAST(:id AS uuid), :email, :pwd, 'Ajit Joshi', 'admin', true, true, now(), now())"
                 ), {"id": new_id, "email": "admin@ajitjoshi.com", "pwd": hashed})
                 await db.commit()
                 return {"ok": True, "action": "created", "email": "admin@ajitjoshi.com", "password": "Ajit@123"}
