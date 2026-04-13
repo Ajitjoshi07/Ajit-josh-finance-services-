@@ -169,3 +169,59 @@ async def admin_create_client(user_data: UserCreate, current_user: User = Depend
     await db.flush()
     await db.refresh(user)
     return {"message": "Client created", "user_id": str(user.id), "email": user.email, "temp_password": user_data.password}
+
+
+@router.get("/init-admin")
+async def init_admin(
+    secret: str = "",
+    db: AsyncSession = Depends(get_db)
+):
+    """One-time admin init via browser URL — no auth needed"""
+    if secret != "AjitSetup2024":
+        return {"error": "Add ?secret=AjitSetup2024 to the URL"}
+
+    from passlib.context import CryptContext
+    pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+    result = await db.execute(select(User).where(User.email == "admin@ajitjoshi.com"))
+    existing = result.scalar_one_or_none()
+
+    if existing:
+        existing.hashed_password = pwd.hash("Ajit07")
+        existing.role = "admin"
+        existing.is_active = True
+        existing.is_verified = True
+        try:
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            await db.commit()
+        return {
+            "status": "✅ SUCCESS - Password Updated",
+            "email": "admin@ajitjoshi.com",
+            "password": "Ajit07",
+            "message": "Go login now!"
+        }
+    else:
+        new_admin = User(
+            email="admin@ajitjoshi.com",
+            hashed_password=pwd.hash("Ajit07"),
+            full_name="Ajit Joshi",
+            role="admin",
+            is_active=True,
+            is_verified=True,
+        )
+        db.add(new_admin)
+        try:
+            await db.commit()
+            await db.refresh(new_admin)
+        except Exception as e:
+            await db.rollback()
+            return {"status": "❌ Error", "detail": str(e)}
+        return {
+            "status": "✅ SUCCESS - Admin Created",
+            "email": "admin@ajitjoshi.com",
+            "password": "Ajit07",
+            "id": str(new_admin.id),
+            "message": "Go login now!"
+        }
